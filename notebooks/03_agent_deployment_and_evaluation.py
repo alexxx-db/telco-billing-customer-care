@@ -408,6 +408,7 @@ with mlflow.start_run():
 
 # TODO: Change to your FAQ table name
 faq_table = (f"{config['catalog']}.{config['schema']}.billing_faq_dataset")
+display(faq_table)
 
 # COMMAND ----------
 
@@ -489,4 +490,5 @@ import mlflow
 agents.deploy(UC_MODEL_NAME, uc_registered_model_info.version)
 
 # COMMAND ----------
+
 

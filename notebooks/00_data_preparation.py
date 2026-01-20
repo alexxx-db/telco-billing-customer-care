@@ -146,8 +146,10 @@ current_workspace_path = dbutils.notebook.entry_point.getDbutils().notebook().ge
 data_dir_path = "/".join(current_workspace_path.split("/")[:-1]) + "/data"
 df_plans = spark.read.format("json").schema(schema).load("dbfs:" + data_dir_path + "/billing_plans.json")
 
+# COMMAND ----------
+
 # Write the DataFrame to a Delta table
-# df_plans.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{catalog}.{db}.billing_plans")
+df_plans.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{catalog}.{db}.billing_plans")
 
 # COMMAND ----------
 

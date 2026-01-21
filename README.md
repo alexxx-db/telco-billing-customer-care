@@ -23,9 +23,8 @@ Designed as a human-in-the-loop solution, it empowers customer service agents to
 ---
 
 
-## Authors
-Kyra Wulffert <kyra.wulffert@databricks.com><br>
-Sachin Patil <sachin.patil@databricks.com>
+## Author
+Alex Barreto <alex.barreto@databricks.com><br>
 
 ---
 

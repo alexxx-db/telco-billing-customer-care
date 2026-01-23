@@ -1,6 +1,3 @@
-<img src=https://raw.githubusercontent.com/databricks-industry-solutions/.github/main/profile/solacc_logo.png width="600px">
-
-
 ## Business Problem
 
 Telecoms are leveraging AI to achieve first-point resolution on customer issues and unify fragmented customer data to proactively enhance customer engagement and retention. This solution leverages AI to analyze incoming customer communications, understanding context and sentiment to prepare tailored responses for agents. We have picked one of the common billing issues for telco customers. 
@@ -22,10 +19,8 @@ Designed as a human-in-the-loop solution, it empowers customer service agents to
 
 ---
 
-
 ## Authors
-Kyra Wulffert <kyra.wulffert@databricks.com><br>
-Sachin Patil <sachin.patil@databricks.com>
+Alex Barreto <alex.barreto@entrada.ai>
 
 ---
 

@@ -1,41 +1,104 @@
+"""
+Databricks Chatbot Component for Dash
+
+This module provides a reusable chatbot component for Dash applications
+that connects to Databricks model serving endpoints.
+
+Best Practices Applied:
+- Proper logging instead of print statements
+- Configurable max_tokens (increased from 128 to 1024)
+- Error handling with user-friendly messages
+- Auto-scrolling chat history
+"""
+
+import logging
 import dash
 from dash import html, Input, Output, State, dcc
 import dash_bootstrap_components as dbc
 from model_serving_utils import query_endpoint
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("databricks-chatbot")
+
+
 class DatabricksChatbot:
-    def __init__(self, app, endpoint_name, height='600px'):
+    """
+    A reusable chatbot component for Dash applications.
+    
+    This component provides:
+    - Chat interface with message history
+    - Connection to Databricks model serving endpoints
+    - Auto-scrolling to latest messages
+    - Clear chat functionality
+    - Typing indicators
+    
+    Args:
+        app: The Dash application instance
+        endpoint_name: The name of the Databricks model serving endpoint
+        height: CSS height for the chat container (default: '600px')
+        max_tokens: Maximum tokens for model responses (default: 1024)
+    """
+    
+    # Best Practice: Increased from 128 to 1024 for detailed billing explanations
+    DEFAULT_MAX_TOKENS = 1024
+    
+    def __init__(self, app, endpoint_name, height='600px', max_tokens=None):
         self.app = app
         self.endpoint_name = endpoint_name
         self.height = height
+        self.max_tokens = max_tokens or self.DEFAULT_MAX_TOKENS
         self.layout = self._create_layout()
         self._create_callbacks()
         self._add_custom_css()
+        
+        logger.info(f"Chatbot initialized with endpoint: {endpoint_name}, max_tokens: {self.max_tokens}")
 
     def _create_layout(self):
+        """Create the chat interface layout."""
         return html.Div([
             html.H2('Billing AI Assistant', className='chat-title mb-3'),
             html.Div([
-                "Note: this is a simple example. See ",
-                html.A("Databricks docs", href="https://docs.databricks.com/aws/en/generative-ai/agent-framework/chat-app", target="_blank"),
-                " for a more comprehensive example, with support for streaming output and more."
-            ]),
+                "Welcome to the Billing Support Assistant. I can help you with:",
+                html.Ul([
+                    html.Li("Understanding your bill and charges"),
+                    html.Li("Payment options and autopay setup"),
+                    html.Li("Plan information and comparisons"),
+                    html.Li("Billing-related FAQs"),
+                ], style={'fontSize': '14px', 'marginTop': '8px'}),
+                html.Small([
+                    "For detailed billing information, please have your customer ID ready. ",
+                    html.A("See documentation", href="https://docs.databricks.com/aws/en/generative-ai/agent-framework/chat-app", target="_blank"),
+                    " for more features."
+                ], style={'color': '#666'})
+            ], className='mb-3', style={'fontSize': '14px', 'color': '#444'}),
             dbc.Card([
                 dbc.CardBody([
                     html.Div(id='chat-history', className='chat-history'),
                 ], className='d-flex flex-column chat-body')
             ], className='chat-card mb-3'),
             dbc.InputGroup([
-                dbc.Input(id='user-input', placeholder='Type your message here...', type='text'),
+                dbc.Input(
+                    id='user-input', 
+                    placeholder='Type your billing question here...', 
+                    type='text',
+                    debounce=True
+                ),
                 dbc.Button('Send', id='send-button', color='success', n_clicks=0, className='ms-2'),
                 dbc.Button('Clear', id='clear-button', color='danger', n_clicks=0, className='ms-2'),
             ], className='mb-3'),
             dcc.Store(id='assistant-trigger'),
             dcc.Store(id='chat-history-store'),
+            dcc.Store(id='max-tokens-store', data={'max_tokens': self.max_tokens}),
             html.Div(id='dummy-output', style={'display': 'none'}),
         ], className='d-flex flex-column chat-container p-3')
 
     def _create_callbacks(self):
+        """Set up Dash callbacks for chat functionality."""
+        
         @self.app.callback(
             Output('chat-history-store', 'data', allow_duplicate=True),
             Output('chat-history', 'children', allow_duplicate=True),
@@ -48,9 +111,13 @@ class DatabricksChatbot:
             prevent_initial_call=True
         )
         def update_chat(send_clicks, user_submit, user_input, chat_history):
-            if not user_input:
+            """Handle user message submission."""
+            if not user_input or not user_input.strip():
                 return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
+            user_input = user_input.strip()
+            logger.info(f"User message received: {user_input[:50]}...")
+            
             chat_history = chat_history or []
             chat_history.append({'role': 'user', 'content': user_input})
             chat_display = self._format_chat_display(chat_history)
@@ -63,9 +130,11 @@ class DatabricksChatbot:
             Output('chat-history', 'children', allow_duplicate=True),
             Input('assistant-trigger', 'data'),
             State('chat-history-store', 'data'),
+            State('max-tokens-store', 'data'),
             prevent_initial_call=True
         )
-        def process_assistant_response(trigger, chat_history):
+        def process_assistant_response(trigger, chat_history, token_config):
+            """Process the assistant's response from the model endpoint."""
             if not trigger or not trigger.get('trigger'):
                 return dash.no_update, dash.no_update
 
@@ -75,15 +144,19 @@ class DatabricksChatbot:
                     or chat_history[-1]['role'] != 'user'):
                 return dash.no_update, dash.no_update
 
+            max_tokens = token_config.get('max_tokens', self.DEFAULT_MAX_TOKENS) if token_config else self.DEFAULT_MAX_TOKENS
+
             try:
-                assistant_response = self._call_model_endpoint(chat_history)
+                logger.info(f"Calling model endpoint with max_tokens={max_tokens}")
+                assistant_response = self._call_model_endpoint(chat_history, max_tokens)
                 chat_history.append({
                     'role': 'assistant',
                     'content': assistant_response
                 })
+                logger.info("Assistant response received successfully")
             except Exception as e:
-                error_message = f'Error: {str(e)}'
-                print(error_message)  # Log the error for debugging
+                error_message = f"I apologize, but I encountered an error processing your request. Please try again."
+                logger.error(f"Error calling model endpoint: {str(e)}")
                 chat_history.append({
                     'role': 'assistant',
                     'content': error_message
@@ -99,20 +172,36 @@ class DatabricksChatbot:
             prevent_initial_call=True
         )
         def clear_chat(n_clicks):
-            print('Clearing chat')
+            """Clear the chat history."""
             if n_clicks:
+                logger.info("Chat history cleared")
                 return [], []
             return dash.no_update, dash.no_update
 
-    def _call_model_endpoint(self, messages, max_tokens=128):
+    def _call_model_endpoint(self, messages, max_tokens=None):
+        """
+        Call the model serving endpoint.
+        
+        Args:
+            messages: List of chat messages
+            max_tokens: Maximum tokens for the response
+            
+        Returns:
+            The assistant's response content
+        """
+        if max_tokens is None:
+            max_tokens = self.max_tokens
+            
         try:
-            print('Calling model endpoint...')
-            return query_endpoint(self.endpoint_name, messages, max_tokens)["content"]
+            logger.debug(f"Sending request to endpoint: {self.endpoint_name}")
+            response = query_endpoint(self.endpoint_name, messages, max_tokens)
+            return response["content"]
         except Exception as e:
-            print(f'Error calling model endpoint: {str(e)}')
+            logger.error(f"Model endpoint error: {str(e)}")
             raise
 
     def _format_chat_display(self, chat_history):
+        """Format chat history for display."""
         return [
             html.Div([
                 html.Div(msg['content'],
@@ -122,6 +211,7 @@ class DatabricksChatbot:
         ]
 
     def _create_typing_indicator(self):
+        """Create a typing indicator element."""
         return html.Div([
             html.Div(className='chat-message assistant-message typing-message',
                      children=[
@@ -132,6 +222,7 @@ class DatabricksChatbot:
         ], className='message-container assistant-container')
 
     def _add_custom_css(self):
+        """Add custom CSS styles for the chat interface."""
         custom_css = '''
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
         body {
@@ -186,6 +277,8 @@ class DatabricksChatbot:
             border-radius: 20px;
             font-size: 16px;
             line-height: 1.4;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
         .user-message {
             background-color: #FF3621; /* Databricks Orange 600 */
@@ -244,6 +337,7 @@ class DatabricksChatbot:
             f'<style>{custom_css}</style></head>'
         )
 
+        # Add auto-scroll behavior
         self.app.clientside_callback(
             """
             function(children) {

@@ -33,11 +33,11 @@ Sachin Patil <sachin.patil@databricks.com>
 
 | Notebook | Description |
 |----------|-------------|
-| `000-config` | Central config for the accelerator  |
+| `000-config` | Central config for the accelerator with environment-aware settings and Databricks Secrets integration |
 | `00_data_preparation` | Synthetic data generation using [Databricks Labs Data Generator](https://github.com/databrickslabs/dbldatagen). Simulates billing, device, and customer datasets. |
-| `01_create_vector_search` | Builds the FAQ dataset and creates a vector search index using Databricks Vector Search. |
-| `02_define_uc_tools` | Defines functions as tools in Unity Catalog. These are callable by the agent to query customer, billing, and device information and retrieve relevant data from the vector search with FAQ. |
-| `03_agent_deployment_and_evaluation` | Builds, logs, evaluates, registers, and deploys the agent to a model serving endpoint. Includes synthetic evaluation via the FAQ dataset. |
+| `01_create_vector_search` | Builds the FAQ dataset and creates a vector search index using Databricks Vector Search with hybrid search support. |
+| `02_define_uc_tools` | Defines functions as tools in Unity Catalog with input validation. These are callable by the agent to query customer, billing, and device information and retrieve relevant data from the vector search with FAQ. |
+| `03_agent_deployment_and_evaluation` | Builds, logs, evaluates, registers, and deploys the agent to a model serving endpoint. Includes synthetic evaluation via the FAQ dataset and model alias management. |
 | `dash-chatbot-app/` | A simple Dash web app that lets users chat with the deployed agent using the Databricks Apps framework. |
 
 ---
@@ -46,12 +46,39 @@ Sachin Patil <sachin.patil@databricks.com>
 
 Follow the notebooks in **numerical order** for a smooth end-to-end experience:
 
-1. **[000-config]** – Set up your catalog, schema, endpoint names, and runtime parameters.
-2. **[00_data_preparation]** – Generate synthetic datasets for billing, customers, and devices.
-3. **[01_create_vector_search]** – Build the FAQ dataset, create a Delta table, and generate a vector search index.
-4. **[02_define_uc_tools]** – Define tools that expose customer data to the agent.
-6. **[03_agent_deployment_and_evaluation]** – Build and log the model to MLflow, run agent evaluation with a synthetic evaluation dataset, register the model to Unity Catalog, and deploy it to a serving endpoint.
-7. **[`dash-chatbot-app`]** – Launch the chatbot UI to interact with your agent.
+1. **[000-config]** – Set up your catalog, schema, endpoint names, and runtime parameters. Configure Databricks Secrets for sensitive values.
+2. **[00_data_preparation]** – Generate synthetic datasets for billing, customers, and devices with Delta optimizations.
+3. **[01_create_vector_search]** – Build the FAQ dataset, create a Delta table, and generate a vector search index with timeout protection.
+4. **[02_define_uc_tools]** – Define tools that expose customer data to the agent with input validation for security.
+5. **[03_agent_deployment_and_evaluation]** – Build and log the model to MLflow, run agent evaluation with a synthetic evaluation dataset, register the model to Unity Catalog with lifecycle aliases, and deploy it to a serving endpoint.
+6. **[`dash-chatbot-app`]** – Launch the chatbot UI to interact with your agent.
+
+---
+
+## Databricks Best Practices Applied
+
+This solution accelerator implements the following Databricks best practices:
+
+### Security
+- **Databricks Secrets**: Sensitive configuration (warehouse_id, endpoints) loaded from Databricks Secrets
+- **Input Validation**: All UC functions validate inputs to prevent SQL injection
+- **Dynamic Paths**: User-specific paths generated dynamically, not hardcoded
+
+### Unity Catalog Governance
+- **Organizational Naming**: Catalog names follow organizational conventions (not personal names)
+- **Group-Based Permissions**: Permissions granted to groups, not individuals
+- **Model Aliases**: Lifecycle management using champion/challenger/archived aliases
+
+### Performance
+- **No Spark Caching with Delta**: Removed `.cache()` calls to enable Delta optimizations
+- **Liquid Clustering**: Applied to invoice table for query performance
+- **Hybrid Search**: Vector search uses hybrid mode combining keyword and semantic matching
+- **Timeout Protection**: Vector search index creation has timeout to prevent infinite loops
+
+### Code Quality
+- **Proper Logging**: Uses Python `logging` module instead of `print` statements
+- **Error Handling**: Comprehensive try/catch with meaningful error messages
+- **Documentation**: Clear docstrings and comments throughout
 
 ---
 
@@ -59,9 +86,10 @@ Follow the notebooks in **numerical order** for a smooth end-to-end experience:
 
 - **End-to-end LLM agent lifecycle**: From data to deployment.
 - **Evaluation-first approach**: Includes synthetic question generation and MLflow integration for benchmarking agent performance.
-- **Built-in vector search**: FAQ retrieval using vector search index and semantic similarity.
-- **Fully governed**: Unity Catalog integration for tool and model registration.
+- **Built-in vector search**: FAQ retrieval using vector search index with hybrid search for better accuracy.
+- **Fully governed**: Unity Catalog integration for tool and model registration with proper permissions.
 - **Deployable UI**: Lightweight Dash app included for real-world usage and demoing.
+- **Production-ready**: Implements security, performance, and governance best practices.
 
 <p align="center">
   <img src="./images/chatbot.jpg" alt="Billing Assistant Diagram" width="600"/>
@@ -75,7 +103,21 @@ Follow the notebooks in **numerical order** for a smooth end-to-end experience:
 - Access to Databricks Vector Search & Serving Endpoints
 - Installed: `databricks-sdk`, `databricks-vectorsearch`, `mlflow`, `dash`, `langchain`, etc.
 - Cluster or SQL Warehouse to execute notebooks
-- Recommended Databricks Runtime: 15.4 ML
+- Recommended Databricks Runtime: 15.4 ML or later
+
+### Optional Prerequisites
+
+For production deployment with full security:
+
+```bash
+# Create Databricks secret scope
+databricks secrets create-scope telco-billing
+
+# Store sensitive configuration
+databricks secrets put-secret telco-billing warehouse-id --string-value "your-warehouse-id"
+databricks secrets put-secret telco-billing llm-endpoint --string-value "databricks-claude-3-7-sonnet"
+databricks secrets put-secret telco-billing embedding-endpoint --string-value "databricks-gte-large-en"
+```
 
 ---
 
@@ -96,12 +138,18 @@ Any issues discovered through the use of this project should be filed as GitHub 
 
 ## License
 
-&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source].  All included or referenced third party libraries are subject to the licenses set forth below. 
+&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
 
-##This list needs to be updated
-
-| library                                | description             | license    | source                                              |
-|----------------------------------------|-------------------------|------------|-----------------------------------------------------|
-|  | |  |
-
+| Library | Description | License | Source |
+|---------|-------------|---------|--------|
+| dbldatagen | Databricks Labs Data Generator for synthetic data | Apache 2.0 | https://github.com/databrickslabs/dbldatagen |
+| langchain | Framework for developing LLM applications | MIT | https://github.com/langchain-ai/langchain |
+| langgraph | Library for building stateful LLM agents | MIT | https://github.com/langchain-ai/langgraph |
+| mlflow | Platform for ML lifecycle management | Apache 2.0 | https://github.com/mlflow/mlflow |
+| databricks-langchain | Databricks integrations for LangChain | Apache 2.0 | https://github.com/databricks/databricks-langchain |
+| databricks-vectorsearch | Databricks Vector Search client | Databricks | https://docs.databricks.com/en/generative-ai/vector-search.html |
+| databricks-agents | Databricks Agent Framework | Databricks | https://docs.databricks.com/en/generative-ai/agent-framework/ |
+| dash | Framework for building web applications | MIT | https://github.com/plotly/dash |
+| dash-bootstrap-components | Bootstrap components for Dash | Apache 2.0 | https://github.com/facultyai/dash-bootstrap-components |
+| pydantic | Data validation library | MIT | https://github.com/pydantic/pydantic |
 

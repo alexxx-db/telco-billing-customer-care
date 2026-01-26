@@ -1,27 +1,82 @@
-catalog: cme_demos_alex_barreto
-schema: telco_billing_db
-llm_endpoint: databricks-claude-3-7-sonnet
-embedding_model_endpoint_name: databricks-gte-large-en
-warehouse_id: 148ccb90800933a1
-vector_search_index: cme_demos_alex_barreto.telco_billing_db.faq_indx1
-tools_billing_faq: cme_demos_alex_barreto.telco_billing_db.billing_faq
-tools_billing: cme_demos_alex_barreto.telco_billing_db.lookup_billing
-tools_items: cme_demos_alex_barreto.telco_billing_db.lookup_billing_items
-tools_plans: cme_demos_alex_barreto.telco_billing_db.lookup_billing_plans
-tools_customer: cme_demos_alex_barreto.telco_billing_db.lookup_customer
-agent_name: ai_billing_agent
-agent_prompt: |
-  You are a Billing Support Agent assisting users with billing inquiries.
+# Telco Billing Customer Care Agent Configuration
+# 
+# This is the primary configuration file for the billing agent.
+# 
+# SECURITY NOTE: Sensitive values (warehouse_id, endpoints) should be 
+# managed via Databricks Secrets in production. See 000-config.py for
+# the secure configuration pattern.
+#
+# For production deployment, update these values to match your environment
+# or override via environment variables.
 
-  Guidelines:
-  - First, check FAQ Search before requesting any details.
+# Unity Catalog Configuration
+catalog: telco_billing_dev
+schema: billing_customer_care
+
+# LLM Configuration
+llm_endpoint: databricks-claude-3-7-sonnet
+llm_timeout_seconds: 60
+llm_max_tokens: 1024
+
+# Embedding Model Configuration  
+embedding_model_endpoint_name: databricks-gte-large-en
+
+# Warehouse Configuration (for UC function execution)
+# In production, retrieve this from Databricks Secrets
+warehouse_id: "148ccb90800933a1"
+
+# Vector Search Configuration
+vector_search_index: telco_billing_dev.billing_customer_care.faq_indx1
+
+# Unity Catalog Tools
+# These functions are defined in 02_define_uc_tools.py with input validation
+tools_billing_faq: telco_billing_dev.billing_customer_care.billing_faq
+tools_billing: telco_billing_dev.billing_customer_care.lookup_billing
+tools_items: telco_billing_dev.billing_customer_care.lookup_billing_items
+tools_plans: telco_billing_dev.billing_customer_care.lookup_billing_plans
+tools_customer: telco_billing_dev.billing_customer_care.lookup_customer
+
+# Agent Configuration
+agent_name: ai_billing_agent
+
+# Agent System Prompt
+# This prompt guides the agent's behavior and ensures security compliance
+agent_prompt: |
+  You are a Billing Support Agent assisting users with billing inquiries for a telecommunications provider.
+
+  ## Guidelines:
+  - First, check FAQ Search before requesting any customer details.
   - If an FAQ answer exists, return it immediately.
   - If no FAQ match, request the customer_id before retrieving billing details.
-  - Do not disclose confidential information like names, emails, device_id.
+  - NEVER disclose confidential information like names, emails, device_id, or phone numbers.
+  - Always be polite, professional, and concise.
 
-  Process:
+  ## Security Rules:
+  - Only provide billing summaries and plan information.
+  - If asked for sensitive data (SSN, full credit card, etc.), politely decline.
+  - If a customer_id appears invalid, ask for verification.
+
+  ## Process:
   1. Run FAQ Search -> If an answer exists, return it.
-  2. If no FAQ match, ask for the customer_id and use the relevant tool(s) to fetch billing details.
-  3. If missing details (e.g., timeframe), ask clarifying questions.
+  2. If no FAQ match, ask for the customer_id.
+  3. Use the relevant tool(s) to fetch billing details.
+  4. If missing details (e.g., timeframe), ask clarifying questions.
+  5. Summarize the billing information clearly.
 
-  Keep responses polite, professional, and concise.
+  ## Available Tools:
+  - billing_faq: Search FAQs for common billing questions
+  - lookup_customer: Get customer details (use only to verify customer exists)
+  - lookup_billing: Get monthly billing summary for a customer
+  - lookup_billing_items: Get detailed billing events (data, calls, texts)
+  - lookup_billing_plans: List all available billing plans
+
+# Model Lifecycle Aliases (for MLflow model registry)
+model_alias_champion: champion
+model_alias_challenger: challenger
+model_alias_archived: archived
+
+# Permission Groups (for governance)
+admin_group: telco_billing_admins
+data_engineer_group: telco_billing_data_engineers
+data_scientist_group: telco_billing_data_scientists
+agent_service_principal: telco_billing_agent_sp

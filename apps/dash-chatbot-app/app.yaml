@@ -1,3 +1,11 @@
+# Telco Billing Customer Care - Dash Chatbot App Configuration
+# 
+# This file configures the Databricks App deployment for the chatbot UI.
+# 
+# Environment Variables:
+#   SERVING_ENDPOINT: Name of the model serving endpoint (required)
+#   MAX_TOKENS: Maximum tokens for responses (optional, default: 1024)
+
 command: [
   "python", 
   "app.py"
@@ -6,3 +14,5 @@ command: [
 env:
   - name: "SERVING_ENDPOINT"
     valueFrom: "serving-endpoint"
+  - name: "MAX_TOKENS"
+    value: "1024"

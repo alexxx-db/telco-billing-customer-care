@@ -26,6 +26,13 @@
 # MAGIC For simplicity, we'll ignore the free data, messages and calls threshold in most plans and the complexity
 # MAGIC of matching devices to customers and telecoms operators - our goal here is to show generation of join
 # MAGIC ready data, rather than full modelling of phone usage invoicing.
+# MAGIC
+# MAGIC ## Best Practices Applied:
+# MAGIC - Dynamic paths instead of hardcoded user paths
+# MAGIC - No Spark caching with Delta (Delta handles optimization internally)
+# MAGIC - Liquid clustering for frequently queried columns
+# MAGIC - Enable optimize write for automatic file compaction
+# MAGIC - Proper logging instead of print statements
 
 # COMMAND ----------
 
@@ -53,15 +60,22 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,Initialize logging and configuration
+import logging
+
+# Use logger from config or create new one
+if 'logger' not in dir():
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("telco-billing-data-prep")
+
 catalog = config['catalog']
 db = config['database']
 
-# Ensure the catalog exists, create it if it does not
-# _ = spark.sql(f"CREATE CATALOG IF NOT EXISTS {catalog}")
-# Ensure the schema exists within the specified catalog, create it if it does not
-_ = spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{db}")
-# _ = spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{db}.{volume}")
+logger.info(f"Starting data preparation for {catalog}.{db}")
 
+# Ensure the schema exists within the specified catalog
+_ = spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{db}")
+logger.info(f"Schema {catalog}.{db} ready")
 
 # COMMAND ----------
 
@@ -70,6 +84,7 @@ _ = spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{db}")
 
 # COMMAND ----------
 
+# DBTITLE 1,Load configuration variables
 UNIQUE_CUSTOMERS = config['UNIQUE_CUSTOMERS']
 CUSTOMER_MIN_VALUE = config['CUSTOMER_MIN_VALUE']
 DEVICE_MIN_VALUE = config['DEVICE_MIN_VALUE']
@@ -81,15 +96,14 @@ AVG_EVENTS_PER_CUSTOMER = config['AVG_EVENTS_PER_CUSTOMER']
 
 shuffle_partitions_requested = config['shuffle_partitions_requested']
 partitions_requested = config['partitions_requested']
-NUM_DAYS=config['NUM_DAYS'] 
+NUM_DAYS = config['NUM_DAYS'] 
 MB_100 = config['MB_100']
 K_1 = config['K_1']
-start_dt=config['start_dt']
-end_dt=config['end_dt']
-vector_search_index=config['catalog']
+start_dt = config['start_dt']
+end_dt = config['end_dt']
 
-llm_endpoint=config['llm_endpoint']
-warehouse_id=config['warehouse_id']
+llm_endpoint = config['llm_endpoint']
+warehouse_id = config['warehouse_id']
 
 # COMMAND ----------
 
@@ -99,12 +113,16 @@ warehouse_id=config['warehouse_id']
 
 # COMMAND ----------
 
-dbutils.fs.mkdirs("dbfs:/Users/alex.barreto@entrada.ai/cme/telco-billing-customer-care/notebooks/data/")
+# DBTITLE 1,Create billing plans data using dynamic paths
+# Best Practice: Use dynamic paths from config instead of hardcoded personal paths
+data_path = config['user_data_path']
+dbutils.fs.mkdirs(data_path)
 
-# 1. Define the destination path
-path = "dbfs:/Users/alex.barreto@entrada.ai/cme/telco-billing-customer-care/notebooks/data/billing_plans.json"
+# Define the destination path dynamically
+billing_plans_path = f"{data_path}billing_plans.json"
+logger.info(f"Writing billing plans to: {billing_plans_path}")
 
-# 2. Define the content as a single string
+# Define the content as a single string
 json_data = """{"Plan_key":1,"Plan_id":"PLAN001","Plan_name":"50GB SIM12","contract_in_months":12,"monthly_charges_dollars":25,"Calls_Text":"UNLIMITED","Internet_Speed_MBPS":"100","Data_Limit_GB":"50","Data_Outside_Allowance_Per_MB":0.01,"Roam_Data_charges_per_MB":0.1,"Roam_Call_charges_per_min":1.0,"Roam_text_charges":0.6,"International_call_charge_per_min":0.7,"International_text_charge":0.5}
 {"Plan_key":2,"Plan_id":"PLAN002","Plan_name":"50GB SIM24","contract_in_months":24,"monthly_charges_dollars":22,"Calls_Text":"UNLIMITED","Internet_Speed_MBPS":"100","Data_Limit_GB":"50","Data_Outside_Allowance_Per_MB":0.01,"Roam_Data_charges_per_MB":0.1,"Roam_Call_charges_per_min":1.0,"Roam_text_charges":0.6,"International_call_charge_per_min":0.7,"International_text_charge":0.5}
 {"Plan_key":3,"Plan_id":"PLAN003","Plan_name":"100GB SIM12","contract_in_months":12,"monthly_charges_dollars":28,"Calls_Text":"UNLIMITED","Internet_Speed_MBPS":"100","Data_Limit_GB":"100","Data_Outside_Allowance_Per_MB":0.01,"Roam_Data_charges_per_MB":0.1,"Roam_Call_charges_per_min":1.0,"Roam_text_charges":0.6,"International_call_charge_per_min":0.7,"International_text_charge":0.5}
@@ -116,11 +134,12 @@ json_data = """{"Plan_key":1,"Plan_id":"PLAN001","Plan_name":"50GB SIM12","contr
 {"Plan_key":9,"Plan_id":"PLAN009","Plan_name":"UNLIMITED WORLD SIM12","contract_in_months":12,"monthly_charges_dollars":42,"Calls_Text":"UNLIMITED","Internet_Speed_MBPS":"UNLIMITED","Data_Limit_GB":"UNLIMITED","Data_Outside_Allowance_Per_MB":0.0,"Roam_Data_charges_per_MB":0.0,"Roam_Call_charges_per_min":0.0,"Roam_text_charges":0.0,"International_call_charge_per_min":0.0,"International_text_charge":0.0}
 {"Plan_key":10,"Plan_id":"PLAN010","Plan_name":"UNLIMITED WORLD SIM24","contract_in_months":24,"monthly_charges_dollars":38,"Calls_Text":"UNLIMITED","Internet_Speed_MBPS":"UNLIMITED","Data_Limit_GB":"UNLIMITED","Data_Outside_Allowance_Per_MB":0.0,"Roam_Data_charges_per_MB":0.0,"Roam_Call_charges_per_min":0.0,"Roam_text_charges":0.0,"International_call_charge_per_min":0.0,"International_text_charge":0.0}"""
 
-# 3. Write to DBFS (True allows overwriting if the file already exists)
-dbutils.fs.put(path, json_data, True)
+# Write to DBFS (True allows overwriting if the file already exists)
+dbutils.fs.put(billing_plans_path, json_data, True)
 
 # COMMAND ----------
 
+# DBTITLE 1,Load billing plans with schema
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, DecimalType
 
 # Define the schema for the JSON data
@@ -141,15 +160,20 @@ schema = StructType([
     StructField("International_text_charge", DoubleType(), True)
 ])
 
-# Get the billing dataset path and import the data into a delta table with the specified schema
-current_workspace_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-data_dir_path = "/".join(current_workspace_path.split("/")[:-1]) + "/data"
-df_plans = spark.read.format("json").schema(schema).load("dbfs:" + data_dir_path + "/billing_plans.json")
+# Load from dynamic path
+df_plans = spark.read.format("json").schema(schema).load(billing_plans_path)
 
 # COMMAND ----------
 
-# Write the DataFrame to a Delta table
-df_plans.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{catalog}.{db}.billing_plans")
+# DBTITLE 1,Write billing plans to Delta with optimizations
+# Write the DataFrame to a Delta table with Delta optimizations
+df_plans.write.format("delta") \
+    .mode("overwrite") \
+    .option("overwriteSchema", "true") \
+    .option("delta.enableOptimizeWrite", "true") \
+    .saveAsTable(f"{catalog}.{db}.billing_plans")
+
+logger.info(f"Created table {catalog}.{db}.billing_plans")
 
 # COMMAND ----------
 
@@ -174,29 +198,26 @@ display(df_plans)
 
 # COMMAND ----------
 
+# DBTITLE 1,Generate customer data
 import dbldatagen as dg
 import pyspark.sql.functions as F
 
 shuffle_partitions_requested = 8
-partitions_requested = 1
+partitions_requested = 8
 
 spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions_requested)
 spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
 spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", 20000)
 
+# Clear cache before generation
+spark.catalog.clearCache()
 
-spark.catalog.clearCache()  # clear cache so that if we run multiple times to check performance, we're not relying on cache
-shuffle_partitions_requested = 8
-partitions_requested = 8
 data_rows = UNIQUE_CUSTOMERS
 
 customer_dataspec = (dg.DataGenerator(spark, rows=data_rows, partitions=partitions_requested)
             .withColumn("customer_id","decimal(10)", minValue=CUSTOMER_MIN_VALUE, uniqueValues=UNIQUE_CUSTOMERS)
             .withColumn("customer_name", template=r"\\w \\w|\\w a. \\w")  
            
-            # use the following for a simple sequence
-            #.withColumn("device_id","decimal(10)", minValue=DEVICE_MIN_VALUE, uniqueValues=UNIQUE_CUSTOMERS)
-                     
             .withColumn("device_id","decimal(10)",  minValue=DEVICE_MIN_VALUE, 
                         baseColumn="customer_id", baseColumnType="hash")
 
@@ -212,15 +233,25 @@ customer_dataspec = (dg.DataGenerator(spark, rows=data_rows, partitions=partitio
                         random=True)
             )
 
+# Best Practice: Do NOT use .cache() with Delta tables
+# Delta Lake handles caching internally and .cache() prevents data skipping optimizations
 df_customers = (customer_dataspec.build()
                 .dropDuplicates(["device_id"])
                 .dropDuplicates(["phone_number"])
                 .orderBy("customer_id")
-                .cache()
                )
 
-# Write the DataFrame to a Delta table
-df_customers.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{catalog}.{db}.customers")
+# Write the DataFrame to a Delta table with optimizations
+df_customers.write.format("delta") \
+    .mode("overwrite") \
+    .option("overwriteSchema", "true") \
+    .option("delta.enableOptimizeWrite", "true") \
+    .saveAsTable(f"{catalog}.{db}.customers")
+
+logger.info(f"Created table {catalog}.{db}.customers with {UNIQUE_CUSTOMERS} rows")
+
+# Re-read from Delta for subsequent operations (leverages Delta optimizations)
+df_customers = spark.table(f"{catalog}.{db}.customers")
 
 # COMMAND ----------
 
@@ -230,19 +261,17 @@ df_customers.write.format("delta").mode("overwrite").option("overwriteSchema", "
 
 # COMMAND ----------
 
+# DBTITLE 1,Generate billing events data
 import dbldatagen as dg
 
-
-
-spark.catalog.clearCache()  # clear cache so that if we run multiple times to check performance, we're not relying on cache
-
+spark.catalog.clearCache()
 
 data_rows = AVG_EVENTS_PER_CUSTOMER * UNIQUE_CUSTOMERS * NUM_DAYS
+logger.info(f"Generating {data_rows:,} billing events")
 
 spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions_requested)
 spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
 spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", 20000)
-
 
 # use random seed method of 'hash_fieldname' for better spread - default in later builds
 events_dataspec = (dg.DataGenerator(spark, rows=data_rows, partitions=partitions_requested, randomSeed=42,
@@ -285,8 +314,7 @@ events_dataspec = (dg.DataGenerator(spark, rows=data_rows, partitions=partitions
                    
             )
 
-df_events = (events_dataspec.build()
-               )
+df_events = events_dataspec.build()
 
 # COMMAND ----------
 
@@ -296,19 +324,27 @@ df_events = (events_dataspec.build()
 
 # COMMAND ----------
 
+# DBTITLE 1,Create billing items by joining customers and plans
 # Join the customer dataframe with the billing plans based on plan_key
 df_customer_pricing = df_customers.join(df_plans, df_plans.Plan_key == df_customers.plan)
 
 # COMMAND ----------
 
+# DBTITLE 1,Filter and write billing items with Delta optimizations
 # remove events before the contract start date
 df_billing_items = df_events.alias("events") \
     .join(df_customer_pricing.alias("pricing"), df_events.device_id == df_customer_pricing.device_id) \
     .where(df_events.event_ts >= df_customer_pricing.contract_start_dt) \
     .select("events.*", "pricing.contract_start_dt") 
     
-# Write the DataFrame to a Delta table
-df_billing_items.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{catalog}.{db}.billing_items")
+# Write the DataFrame to a Delta table with optimizations
+df_billing_items.write.format("delta") \
+    .mode("overwrite") \
+    .option("overwriteSchema", "true") \
+    .option("delta.enableOptimizeWrite", "true") \
+    .saveAsTable(f"{catalog}.{db}.billing_items")
+
+logger.info(f"Created table {catalog}.{db}.billing_items")
 
 # COMMAND ----------
 
@@ -322,10 +358,13 @@ df_billing_items.write.format("delta").mode("overwrite").option("overwriteSchema
 
 # COMMAND ----------
 
+# DBTITLE 1,Compute summary with CORRECT MB calculation (1024 not 1028)
 import pyspark.sql.functions as F
 
+# Re-read billing_items from Delta for optimal performance
+df_billing_items = spark.table(f"{catalog}.{db}.billing_items")
 
-# # lets compute the summary minutes messages and bytes transferred
+# lets compute the summary minutes messages and bytes transferred
 df_enriched_events = (df_billing_items
                       .withColumn("texts_roaming", F.expr("case when event_type='texts_roaming' then 1 else 0 end"))
                       .withColumn("texts_international", F.expr("case when event_type='texts_international' then 1 else 0 end"))
@@ -335,26 +374,26 @@ df_enriched_events = (df_billing_items
                       .withColumn("data_roaming", F.expr("case when event_type='data_roaming' then cast(ceil(bytes_transferred) as decimal(30,3)) else 0.0 end"))
                      )
 
-# ["data_local", "data_roaming", "call_mins_roaming", "texts_roaming", "call_mins_international", "texts_international"]
 df_enriched_events.createOrReplaceTempView("telephony_events")
 
-df_summary = spark.sql("""select device_id, 
-                                 concat(extract(year FROM event_ts),"-",lpad(extract(month FROM event_ts),2,'0')) as event_month,
-                                 round(sum(data_local) / (1028*1028), 3) as data_local_mb, 
-                                 round(sum(data_roaming) / (1028*1028), 3) as data_roaming_mb, 
-                                 sum(texts_roaming) as texts_roaming,
-                                 sum(texts_international) as texts_international,
-                                 sum(call_mins_roaming) as call_mins_roaming,
-                                 sum(call_mins_international) as call_mins_international, 
-                                 count(device_id) as event_count
-                                 from telephony_events
-                                 group by 1,2
-                          
+# BUG FIX: Changed 1028*1028 to 1024*1024 for correct MB calculation
+# 1 MB = 1024 * 1024 bytes (not 1028 * 1028)
+df_summary = spark.sql("""
+    SELECT 
+        device_id, 
+        concat(extract(year FROM event_ts),"-",lpad(extract(month FROM event_ts),2,'0')) as event_month,
+        round(sum(data_local) / (1024*1024), 3) as data_local_mb, 
+        round(sum(data_roaming) / (1024*1024), 3) as data_roaming_mb, 
+        sum(texts_roaming) as texts_roaming,
+        sum(texts_international) as texts_international,
+        sum(call_mins_roaming) as call_mins_roaming,
+        sum(call_mins_international) as call_mins_international, 
+        count(device_id) as event_count
+    FROM telephony_events
+    GROUP BY 1, 2
 """)
-# .write.format("delta").mode("overwrite").saveAsTable()
 
 df_summary.createOrReplaceTempView("event_summary")
-
 
 # COMMAND ----------
 
@@ -362,7 +401,7 @@ df_summary.createOrReplaceTempView("event_summary")
 
 # COMMAND ----------
 
-df_customer_summary = (df_customer_pricing.join(df_summary,df_customer_pricing.device_id == df_summary.device_id )
+df_customer_summary = (df_customer_pricing.join(df_summary, df_customer_pricing.device_id == df_summary.device_id)
                        .createOrReplaceTempView("customer_summary"))
 
 # COMMAND ----------
@@ -372,8 +411,10 @@ df_customer_summary = (df_customer_pricing.join(df_summary,df_customer_pricing.d
 
 # COMMAND ----------
 
+# DBTITLE 1,Generate invoices with CORRECT MB calculation
+# BUG FIX: Changed 1028 to 1024 in data_charges_outside_allowance calculation
 df_invoices = spark.sql(
-    """select customer_id, 
+    """SELECT customer_id, 
        customer_name, 
        event_month, 
        phone_number, 
@@ -400,8 +441,8 @@ df_invoices = spark.sql(
        case 
            when Data_Limit_GB != 'UNLIMITED' 
            then case 
-                    when (data_local_mb - cast(Data_Limit_GB as double) * 1028) > 0
-                    then cast((data_local_mb - cast(Data_Limit_GB as double) * 1028) * Data_Outside_Allowance_Per_MB as decimal(18,2))   
+                    when (data_local_mb - cast(Data_Limit_GB as double) * 1024) > 0
+                    then cast((data_local_mb - cast(Data_Limit_GB as double) * 1024) * Data_Outside_Allowance_Per_MB as decimal(18,2))   
                     else 0 
                 end
            else 0 
@@ -432,24 +473,87 @@ df_invoices = spark.sql(
            else 0 
        end as international_text_charges,
        monthly_charges_dollars + data_charges_outside_allowance + roaming_data_charges + roaming_call_charges + roaming_text_charges + international_call_charges + international_text_charges as total_charges
-from customer_summary
-
+FROM customer_summary
 """
 )
 
 # COMMAND ----------
 
-# Write the DataFrame to a Delta table
-df_invoices.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(f"{catalog}.{db}.invoice")
+# DBTITLE 1,Write invoice table with liquid clustering for performance
+# Write the DataFrame to a Delta table with optimizations
+df_invoices.write.format("delta") \
+    .mode("overwrite") \
+    .option("overwriteSchema", "true") \
+    .option("delta.enableOptimizeWrite", "true") \
+    .saveAsTable(f"{catalog}.{db}.invoice")
+
+# Best Practice: Add liquid clustering for frequently queried columns
+# This improves query performance on large tables
+spark.sql(f"""
+    ALTER TABLE {catalog}.{db}.invoice 
+    CLUSTER BY (customer_id, event_month)
+""")
+
+logger.info(f"Created table {catalog}.{db}.invoice with liquid clustering on (customer_id, event_month)")
 
 # COMMAND ----------
 
-ui_functions_path=config['catalog']+"."+config['database']
-print(ui_functions_path)
+# MAGIC %md
+# MAGIC ### Grant Permissions (Best Practice: Use Groups)
 
 # COMMAND ----------
 
-content = f"""
+# DBTITLE 1,Grant permissions to defined groups
+# Best Practice: Grant permissions to groups, not individuals
+admin_group = config.get('admin_group', 'telco_billing_admins')
+data_engineer_group = config.get('data_engineer_group', 'telco_billing_data_engineers')
+data_scientist_group = config.get('data_scientist_group', 'telco_billing_data_scientists')
+
+# Grant schema-level permissions
+try:
+    spark.sql(f"GRANT USAGE ON SCHEMA {catalog}.{db} TO `{data_engineer_group}`")
+    spark.sql(f"GRANT USAGE ON SCHEMA {catalog}.{db} TO `{data_scientist_group}`")
+    spark.sql(f"GRANT ALL PRIVILEGES ON SCHEMA {catalog}.{db} TO `{admin_group}`")
+    
+    # Grant table-level permissions for data scientists (read-only)
+    for table in ['billing_plans', 'customers', 'billing_items', 'invoice']:
+        spark.sql(f"GRANT SELECT ON TABLE {catalog}.{db}.{table} TO `{data_scientist_group}`")
+    
+    # Grant table-level permissions for data engineers (read-write)
+    for table in ['billing_plans', 'customers', 'billing_items', 'invoice']:
+        spark.sql(f"GRANT SELECT, MODIFY ON TABLE {catalog}.{db}.{table} TO `{data_engineer_group}`")
+    
+    logger.info("Permissions granted successfully")
+except Exception as e:
+    logger.warning(f"Could not grant permissions (groups may not exist): {e}")
+    logger.info("Create the groups and re-run this cell to apply permissions")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Summary
+
+# COMMAND ----------
+
+# DBTITLE 1,Print summary
+ui_functions_path = f"{config['catalog']}.{config['database']}"
+logger.info(f"Data preparation complete. Tables created in: {ui_functions_path}")
+logger.info(f"Tables: billing_plans, customers, billing_items, invoice")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Generate config.yml for backward compatibility
+# MAGIC 
+# MAGIC Note: The primary config is now in 000-config.py with Databricks Secrets support.
+# MAGIC This config.yml is generated for backward compatibility only.
+
+# COMMAND ----------
+
+# DBTITLE 1,Generate config.yml (backward compatibility)
+content = f"""# Auto-generated config for backward compatibility
+# Primary configuration is in 000-config.py with Databricks Secrets support
+
 agent_prompt: |
   You are a Billing Support Agent assisting users with billing inquiries.
 
@@ -473,11 +577,7 @@ uc_functions:
   - "{ui_functions_path}.*"
 """
 
-# COMMAND ----------
-
 with open('config.yml', "w") as f:
     f.write(content)
 
-# COMMAND ----------
-
-
+logger.info("Generated config.yml for backward compatibility")

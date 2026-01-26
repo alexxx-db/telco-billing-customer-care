@@ -80,3 +80,56 @@ admin_group: telco_billing_admins
 data_engineer_group: telco_billing_data_engineers
 data_scientist_group: telco_billing_data_scientists
 agent_service_principal: telco_billing_agent_sp
+
+# =============================================================================
+# Agent Bricks Configuration
+# =============================================================================
+# Agent Bricks provides a declarative approach to building AI agents with
+# automatic optimization, evaluation, and multi-agent coordination.
+
+# Knowledge Assistant Configuration
+agent_bricks:
+  # Knowledge Assistant settings
+  knowledge_assistant:
+    name: telco-billing-faq-assistant
+    description: "Answers customer questions about telecom billing, plans, and payments"
+    # Knowledge source - can be UC Files (volume path) or Vector Search Index
+    knowledge_source_type: uc_files  # Options: uc_files, vector_search
+    knowledge_source_path: billing_faq_docs  # Volume name or VS index
+    instructions: |
+      You are a friendly and helpful billing support assistant.
+      - Always cite your sources when providing information
+      - If you don't know the answer, say so clearly
+      - Never make up information or guess
+      - Be concise but thorough
+      - Never provide or confirm personal account information
+
+  # Multi-Agent Supervisor Configuration
+  multi_agent_supervisor:
+    name: telco-billing-supervisor
+    description: "Coordinates billing assistants to handle complex customer inquiries"
+    instructions: |
+      You are a supervisor coordinating multiple billing support agents.
+      1. First, try the FAQ Knowledge Assistant for general questions
+      2. If the customer provides a customer ID, use the billing lookup tools
+      3. For plan comparisons, use the plans lookup tool
+      4. For complex queries, coordinate multiple agents
+      Always verify customer ID before providing account details.
+    
+    # Subagents to coordinate (configured in UI)
+    subagents:
+      - type: knowledge_assistant
+        name: telco-billing-faq-assistant
+        description: "Handles FAQ and general billing questions"
+      - type: uc_function
+        name: lookup_billing
+        description: "Gets monthly billing summary for customers"
+      - type: uc_function
+        name: lookup_billing_items
+        description: "Gets detailed billing line items"
+      - type: uc_function
+        name: lookup_billing_plans
+        description: "Lists available billing plans"
+      - type: uc_function
+        name: lookup_customer
+        description: "Verifies customer accounts"

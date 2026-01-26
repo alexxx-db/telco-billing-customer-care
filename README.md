@@ -38,6 +38,7 @@ Sachin Patil <sachin.patil@databricks.com>
 | `01_create_vector_search` | Builds the FAQ dataset and creates a vector search index using Databricks Vector Search with hybrid search support. |
 | `02_define_uc_tools` | Defines functions as tools in Unity Catalog with input validation. These are callable by the agent to query customer, billing, and device information and retrieve relevant data from the vector search with FAQ. |
 | `03_agent_deployment_and_evaluation` | Builds, logs, evaluates, registers, and deploys the agent to a model serving endpoint. Includes synthetic evaluation via the FAQ dataset and model alias management. |
+| `04_agent_bricks_demo` | **NEW**: Demonstrates Agent Bricks for building production-grade AI agents with declarative configuration, automatic optimization, and multi-agent coordination. |
 | `dash-chatbot-app/` | A simple Dash web app that lets users chat with the deployed agent using the Databricks Apps framework. |
 
 ---
@@ -51,7 +52,87 @@ Follow the notebooks in **numerical order** for a smooth end-to-end experience:
 3. **[01_create_vector_search]** – Build the FAQ dataset, create a Delta table, and generate a vector search index with timeout protection.
 4. **[02_define_uc_tools]** – Define tools that expose customer data to the agent with input validation for security.
 5. **[03_agent_deployment_and_evaluation]** – Build and log the model to MLflow, run agent evaluation with a synthetic evaluation dataset, register the model to Unity Catalog with lifecycle aliases, and deploy it to a serving endpoint.
-6. **[`dash-chatbot-app`]** – Launch the chatbot UI to interact with your agent.
+6. **[04_agent_bricks_demo]** – *(Optional)* Explore Agent Bricks for declarative agent creation with automatic optimization.
+7. **[`dash-chatbot-app`]** – Launch the chatbot UI to interact with your agent.
+
+---
+
+## Agent Bricks Integration
+
+This solution includes a demonstration of **Agent Bricks**, Databricks' declarative framework for building production-grade AI agents with minimal code.
+
+### What is Agent Bricks?
+
+Agent Bricks streamlines building AI agents by offering:
+
+| Feature | Description |
+|---------|-------------|
+| **Knowledge Assistant** | Create high-quality FAQ chatbots with citations using your documents |
+| **Multi-Agent Supervisor** | Orchestrate multiple specialized agents for complex queries |
+| **Automatic Optimization** | Databricks automatically tunes models and hyperparameters |
+| **Built-in Evaluation** | Integrated quality assessment through MLflow |
+| **Unity Catalog Integration** | Full governance and security compliance |
+
+### Agent Bricks Architecture for Telco Billing
+
+```
+                    ┌─────────────────────────┐
+                    │   Multi-Agent           │
+                    │   Supervisor            │
+                    │   (telco-billing-       │
+                    │    supervisor)          │
+                    └───────────┬─────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        │                       │                       │
+        ▼                       ▼                       ▼
+┌───────────────┐      ┌───────────────┐      ┌───────────────┐
+│  Knowledge    │      │   Billing     │      │   UC Tools    │
+│  Assistant    │      │   Genie       │      │               │
+│  (FAQs)       │      │   Space       │      │ - lookup_     │
+│               │      │  (Analytics)  │      │   billing     │
+└───────────────┘      └───────────────┘      │ - lookup_     │
+                                              │   customer    │
+                                              │ - lookup_     │
+                                              │   plans       │
+                                              └───────────────┘
+```
+
+### Quick Start with Agent Bricks
+
+1. **Prerequisites** (Workspace must have):
+   - Region: `us-east-1` or `us-west-2`
+   - Mosaic AI Agent Bricks Preview enabled
+   - Production monitoring for MLflow (Beta) enabled
+   - Serverless compute enabled
+
+2. **Create Knowledge Assistant**:
+   - Go to **Agents** → **Knowledge Assistant** → **Build**
+   - Name: `telco-billing-faq-assistant`
+   - Knowledge Source: UC Files volume or Vector Search Index
+   - Add the FAQ documents from `04_agent_bricks_demo`
+
+3. **Create Multi-Agent Supervisor**:
+   - Go to **Agents** → **Multi-Agent Supervisor** → **Build**
+   - Name: `telco-billing-supervisor`
+   - Add subagents: Knowledge Assistant + UC Functions
+
+4. **Iterate on Quality**:
+   - Use the **Examples** tab to add test questions
+   - Provide natural language guidelines
+   - Agent Bricks automatically optimizes
+
+### Benefits vs Custom Agent
+
+| Aspect | Custom Agent (notebooks 00-03) | Agent Bricks (notebook 04) |
+|--------|-------------------------------|---------------------------|
+| Setup Time | Hours of code | Minutes in UI |
+| Optimization | Manual tuning | Automatic |
+| Evaluation | Custom scripts | Built-in |
+| Multi-Agent | Code LangGraph | Declarative config |
+| Maintenance | Code changes | UI updates |
+
+**Recommendation**: Start with Agent Bricks for rapid prototyping, then use the custom agent approach when you need fine-grained control.
 
 ---
 
@@ -90,6 +171,7 @@ This solution accelerator implements the following Databricks best practices:
 - **Fully governed**: Unity Catalog integration for tool and model registration with proper permissions.
 - **Deployable UI**: Lightweight Dash app included for real-world usage and demoing.
 - **Production-ready**: Implements security, performance, and governance best practices.
+- **Agent Bricks Integration**: Declarative agent creation with automatic optimization and multi-agent coordination.
 
 <p align="center">
   <img src="./images/chatbot.jpg" alt="Billing Assistant Diagram" width="600"/>
@@ -104,6 +186,19 @@ This solution accelerator implements the following Databricks best practices:
 - Installed: `databricks-sdk`, `databricks-vectorsearch`, `mlflow`, `dash`, `langchain`, etc.
 - Cluster or SQL Warehouse to execute notebooks
 - Recommended Databricks Runtime: 15.4 ML or later
+
+### Agent Bricks Requirements (for notebook 04)
+
+To use Agent Bricks features, your workspace must have:
+
+- **Region**: `us-east-1` or `us-west-2`
+- **Previews Enabled**:
+  - Mosaic AI Agent Bricks Preview (Beta)
+  - Production monitoring for MLflow (Beta)
+  - Agent Framework: On-Behalf-Of-User Authorization (for Multi-Agent Supervisor)
+- **Serverless compute** enabled
+- Access to foundation models in `system.ai` schema
+- `databricks-gte-large-en` embedding model with AI Guardrails and rate limits disabled
 
 ### Optional Prerequisites
 

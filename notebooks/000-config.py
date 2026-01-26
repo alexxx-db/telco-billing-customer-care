@@ -218,6 +218,57 @@ config['model_alias_archived'] = 'archived'
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### Agent Bricks Configuration
+# MAGIC 
+# MAGIC **Agent Bricks** provides a declarative approach to building production-grade AI agents
+# MAGIC with automatic optimization, evaluation, and multi-agent coordination.
+# MAGIC 
+# MAGIC **Prerequisites**:
+# MAGIC - Workspace in `us-east-1` or `us-west-2` region
+# MAGIC - Mosaic AI Agent Bricks Preview enabled
+# MAGIC - Production monitoring for MLflow (Beta) enabled
+
+# COMMAND ----------
+
+# DBTITLE 1,Configure Agent Bricks
+# Agent Bricks Configuration
+config['agent_bricks'] = {
+    # Knowledge Assistant - FAQ chatbot with citations
+    'knowledge_assistant': {
+        'name': 'telco-billing-faq-assistant',
+        'description': 'Answers customer questions about telecom billing, plans, and payments',
+        'knowledge_source_type': 'uc_files',  # Options: uc_files, vector_search
+        'volume_name': 'billing_faq_docs',
+        'instructions': """You are a friendly and helpful billing support assistant.
+- Always cite your sources when providing information
+- If you don't know the answer, say so clearly
+- Never make up information or guess
+- Be concise but thorough
+- Never provide or confirm personal account information"""
+    },
+    
+    # Multi-Agent Supervisor - Orchestrates multiple agents
+    'multi_agent_supervisor': {
+        'name': 'telco-billing-supervisor',
+        'description': 'Coordinates billing assistants to handle complex customer inquiries',
+        'instructions': """You are a supervisor coordinating multiple billing support agents.
+1. First, try the FAQ Knowledge Assistant for general questions
+2. If the customer provides a customer ID, use the billing lookup tools
+3. For plan comparisons, use the plans lookup tool
+4. For complex queries, coordinate multiple agents
+Always verify customer ID before providing account details."""
+    }
+}
+
+# Full paths for Agent Bricks resources
+config['faq_volume_path'] = f"/Volumes/{config['catalog']}/{config['database']}/{config['agent_bricks']['knowledge_assistant']['volume_name']}"
+
+logger.info(f"Agent Bricks Knowledge Assistant: {config['agent_bricks']['knowledge_assistant']['name']}")
+logger.info(f"Agent Bricks Multi-Agent Supervisor: {config['agent_bricks']['multi_agent_supervisor']['name']}")
+
+# COMMAND ----------
+
 # DBTITLE 1,Validate Configuration
 # Validate required configuration
 required_configs = ['catalog', 'database', 'warehouse_id', 'llm_endpoint']

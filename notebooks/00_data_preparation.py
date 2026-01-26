@@ -56,11 +56,8 @@
 
 # COMMAND ----------
 
-# MAGIC %run ./000-config
-
-# COMMAND ----------
-
 # DBTITLE 1,Initialize logging and configuration
+# Note: Config already loaded via %run at top of notebook
 import logging
 
 # Use logger from config or create new one
@@ -191,10 +188,7 @@ display(df_plans)
 # MAGIC
 # MAGIC Device is used as the the foreign key. For more details around the data generation, please refer Databricks Labs project.
 # MAGIC
-
-# COMMAND ----------
-
-# MAGIC %pip install dbldatagen
+# MAGIC Note: dbldatagen was already installed at the start of this notebook.
 
 # COMMAND ----------
 

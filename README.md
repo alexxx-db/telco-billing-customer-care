@@ -1,6 +1,3 @@
-<img src=https://raw.githubusercontent.com/databricks-industry-solutions/.github/main/profile/solacc_logo.png width="600px">
-
-
 ## Business Problem
 
 Telecoms are leveraging AI to achieve first-point resolution on customer issues and unify fragmented customer data to proactively enhance customer engagement and retention. This solution leverages AI to analyze incoming customer communications, understanding context and sentiment to prepare tailored responses for agents. We have picked one of the common billing issues for telco customers. 
@@ -22,10 +19,8 @@ Designed as a human-in-the-loop solution, it empowers customer service agents to
 
 ---
 
-
 ## Authors
-Kyra Wulffert <kyra.wulffert@databricks.com><br>
-Sachin Patil <sachin.patil@databricks.com>
+Alex Barreto <alex.barreto@entrada.ai>
 
 ---
 
@@ -233,7 +228,7 @@ Any issues discovered through the use of this project should be filed as GitHub 
 
 ## License
 
-&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
+&copy; 2026 Entrada, Inc. All rights reserved.  All included or referenced third party libraries are subject to the licenses set forth below.
 
 | Library | Description | License | Source |
 |---------|-------------|---------|--------|
@@ -247,4 +242,6 @@ Any issues discovered through the use of this project should be filed as GitHub 
 | dash | Framework for building web applications | MIT | https://github.com/plotly/dash |
 | dash-bootstrap-components | Bootstrap components for Dash | Apache 2.0 | https://github.com/facultyai/dash-bootstrap-components |
 | pydantic | Data validation library | MIT | https://github.com/pydantic/pydantic |
+
+=======
 

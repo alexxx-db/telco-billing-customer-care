@@ -24,9 +24,8 @@
 # COMMAND ----------
 
 # DBTITLE 1,Install and Update Required Python Packages
-# Install required packages
-%pip install -U -qqqq mlflow-skinny langchain==0.2.16 langgraph-checkpoint==1.0.12 langchain_core langchain-community==0.2.16 langgraph==0.2.16 pydantic langchain_databricks unitycatalog-langchain unitycatalog-ai
-dbutils.library.restartPython()
+# MAGIC %pip install -U -qqqq mlflow-skinny langchain==0.2.16 langgraph-checkpoint==1.0.12 langchain_core langchain-community==0.2.16 langgraph==0.2.16 pydantic langchain_databricks unitycatalog-langchain unitycatalog-ai
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -177,11 +176,11 @@ spark.sql(f"DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.lookup_billing_plans;")
 sqlstr_lkp_bill_plans = f"""
 CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.lookup_billing_plans()
 RETURNS TABLE (
-    Plan_key BIGINT,
+    Plan_key INT,
     Plan_id STRING,
     Plan_name STRING,
-    contract_in_months BIGINT,
-    monthly_charges_dollars BIGINT,
+    contract_in_months INT,
+    monthly_charges_dollars DOUBLE,
     Calls_Text STRING,
     Internet_Speed_MBPS STRING,
     Data_Limit_GB STRING,

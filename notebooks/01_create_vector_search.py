@@ -75,7 +75,7 @@ logger.info(f"  Embedding Model: {embedding_model_endpoint_name}")
 
 # DBTITLE 1,Create Billing FAQ Dataset and Save as Delta Table
 import pandas as pd
-from pyspark.sql import SparkSession
+# Note: spark session is already available in Databricks notebooks
 
 # Create a Pandas DataFrame from the FAQ data
 # NOTE: In production, this should be expanded with more comprehensive FAQs
@@ -100,7 +100,7 @@ faq_data = [
 
 # Convert to Pandas then Spark DataFrame
 pdf = pd.DataFrame(faq_data, columns=["index", "faq"])
-spark_df = SparkSession.builder.getOrCreate().createDataFrame(pdf)
+spark_df = spark.createDataFrame(pdf)  # Use existing spark session in Databricks
 
 # Save as a Delta table with optimizations
 spark_df.write.format("delta") \

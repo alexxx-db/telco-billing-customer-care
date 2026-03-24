@@ -76,19 +76,22 @@ config['tools_billing'] = config['catalog']+'.'+config['database']+'.lookup_bill
 config['tools_items'] = config['catalog']+'.'+config['database']+'.lookup_billing_items'
 config['tools_plans'] = config['catalog']+'.'+config['database']+'.lookup_billing_plans'
 config['tools_customer'] = config['catalog']+'.'+config['database']+'.lookup_customer'
+config['tools_anomalies'] = config['catalog']+'.'+config['database']+'.lookup_billing_anomalies'
 
 # Genie Space
 config['genie_space_name'] = 'Telco Billing Analytics'
 config['genie_space_description'] = (
     'Natural language analytics over telco billing data. '
-    'Includes invoice_analytics with monthly charge breakdowns per customer (roaming, international, data overage, plan info) '
-    'and billing_plans with plan pricing, data limits, and allowances. '
+    'Includes invoice_analytics with monthly charge breakdowns per customer (roaming, international, data overage, plan info), '
+    'billing_plans with plan pricing, data limits, and allowances, '
+    'and billing_anomalies_analytics with detected billing anomalies (charge spikes, roaming spikes, data overages). '
     'Tables join via plan_name. Invoice has monthly granularity per customer_id. '
     'PII fields (names, emails, phone numbers) are excluded.'
 )
 config['genie_space_tables'] = [
     config['catalog'] + '.' + config['database'] + '.invoice_analytics',
     config['catalog'] + '.' + config['database'] + '.billing_plans',
+    config['catalog'] + '.' + config['database'] + '.billing_anomalies_analytics',
 ]
 config['genie_space_sample_questions'] = [
     "What is the average monthly total charge across all customers?",
@@ -98,6 +101,8 @@ config['genie_space_sample_questions'] = [
     "What is the month-over-month trend in international call charges?",
     "Which customers have total charges above $100 in any single month?",
     "Compare average total charges between 12-month and 24-month contract plans",
+    "How many billing anomalies were detected by type?",
+    "Which customers have the most billing anomalies?",
 ]
 config['genie_space_id'] = None  # Set by 03a_create_genie_space after creation
 

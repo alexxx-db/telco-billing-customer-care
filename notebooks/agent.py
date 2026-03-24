@@ -57,8 +57,9 @@ uc_tool_names = [
     config['tools_billing_faq'],
     config['tools_billing'],
     config['tools_items'],
-    config['tools_plans'],  
-    config['tools_customer']
+    config['tools_plans'],
+    config['tools_customer'],
+    config['tools_anomalies'],
     ]
 uc_toolkit = UCFunctionToolkit(function_names=uc_tool_names)
 tools.extend(uc_toolkit.tools)

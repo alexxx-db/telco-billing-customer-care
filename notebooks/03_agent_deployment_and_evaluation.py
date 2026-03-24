@@ -92,12 +92,16 @@ Guidelines:
   over the full billing dataset.
 - For individual customer lookups (specific customer's bill, plan, etc.), use the
   dedicated lookup tools.
+- To check for billing anomalies (charge spikes, roaming spikes, international spikes,
+  data overages), use the lookup_billing_anomalies tool. You can look up anomalies for
+  a specific customer or pass an empty string to see recent anomalies across all customers.
 
 Process:
 1. Run FAQ Search -> If an answer exists, return it.
 2. If no FAQ match, ask for the customer_id and use the relevant tool(s) to fetch billing details.
 3. For analytical questions across multiple customers, use ask_billing_analytics.
-4. If missing details (e.g., timeframe), ask clarifying questions.
+4. When asked about unusual charges or billing anomalies, use lookup_billing_anomalies.
+5. If missing details (e.g., timeframe), ask clarifying questions.
 
 Keep responses polite, professional, and concise.
 """
@@ -115,6 +119,7 @@ tools_billing = config['tools_billing']
 tools_items = config['tools_items']
 tools_plans = config['tools_plans']
 tools_customer = config['tools_customer']
+tools_anomalies = config['tools_anomalies']
 agent_name = config['agent_name']
 genie_space_id = config.get('genie_space_id', '') or ''
 agent_prompt = LiteralString(system_prompt)
@@ -133,6 +138,7 @@ yaml_data = {
     "tools_items": tools_items,
     "tools_plans": tools_plans,
     "tools_customer": tools_customer,
+    "tools_anomalies": tools_anomalies,
     "agent_name": agent_name,
     "genie_space_id": genie_space_id,
     "agent_prompt": agent_prompt
@@ -212,7 +218,8 @@ with open("config.yaml", "w") as f:
 # MAGIC     config['tools_billing'],
 # MAGIC     config['tools_items'],
 # MAGIC     config['tools_plans'],
-# MAGIC     config['tools_customer']
+# MAGIC     config['tools_customer'],
+# MAGIC     config['tools_anomalies'],
 # MAGIC     ]
 # MAGIC uc_toolkit = UCFunctionToolkit(function_names=uc_tool_names)
 # MAGIC tools.extend(uc_toolkit.tools)

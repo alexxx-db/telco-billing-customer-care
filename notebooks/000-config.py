@@ -76,3 +76,27 @@ config['tools_billing'] = config['catalog']+'.'+config['database']+'.lookup_bill
 config['tools_items'] = config['catalog']+'.'+config['database']+'.lookup_billing_items'
 config['tools_plans'] = config['catalog']+'.'+config['database']+'.lookup_billing_plans'
 config['tools_customer'] = config['catalog']+'.'+config['database']+'.lookup_customer'
+
+# Genie Space
+config['genie_space_name'] = 'Telco Billing Analytics'
+config['genie_space_description'] = (
+    'Natural language analytics over telco billing data. '
+    'Includes customer invoices with monthly charge breakdowns (roaming, international, data overage), '
+    'customer master data (plan, contract start date), and billing plan details (pricing, data limits, allowances). '
+    'Tables join on customer plan key. Invoice has monthly granularity per customer.'
+)
+config['genie_space_tables'] = [
+    config['catalog'] + '.' + config['database'] + '.invoice',
+    config['catalog'] + '.' + config['database'] + '.customers',
+    config['catalog'] + '.' + config['database'] + '.billing_plans',
+]
+config['genie_space_sample_questions'] = [
+    "What is the average monthly total charge across all customers?",
+    "Which billing plan has the highest average roaming data charges?",
+    "How many customers are on each billing plan?",
+    "What are the top 10 customers by total charges in the last 3 months?",
+    "What is the month-over-month trend in international call charges?",
+    "Which customers have total charges above $100 in any single month?",
+    "Compare average total charges between 12-month and 24-month contract plans",
+]
+config['genie_space_id'] = None  # Set by 03a_create_genie_space after creation

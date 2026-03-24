@@ -37,6 +37,7 @@ Sachin Patil <sachin.patil@databricks.com>
 | `00_data_preparation` | Synthetic data generation using [Databricks Labs Data Generator](https://github.com/databrickslabs/dbldatagen). Simulates billing, device, and customer datasets. |
 | `01_create_vector_search` | Builds the FAQ dataset and creates a vector search index using Databricks Vector Search. |
 | `02_define_uc_tools` | Defines functions as tools in Unity Catalog. These are callable by the agent to query customer, billing, and device information and retrieve relevant data from the vector search with FAQ. |
+| `03a_create_genie_space` | Creates a Databricks Genie Space for ad-hoc billing analytics over invoice, customer, and plan tables. |
 | `03_agent_deployment_and_evaluation` | Builds, logs, evaluates, registers, and deploys the agent to a model serving endpoint. Includes synthetic evaluation via the FAQ dataset. |
 | `dash-chatbot-app/` | A simple Dash web app that lets users chat with the deployed agent using the Databricks Apps framework. |
 
@@ -50,6 +51,7 @@ Follow the notebooks in **numerical order** for a smooth end-to-end experience:
 2. **[00_data_preparation]** – Generate synthetic datasets for billing, customers, and devices.
 3. **[01_create_vector_search]** – Build the FAQ dataset, create a Delta table, and generate a vector search index.
 4. **[02_define_uc_tools]** – Define tools that expose customer data to the agent.
+5. **[03a_create_genie_space]** – Create a Genie Space for ad-hoc billing analytics.
 6. **[03_agent_deployment_and_evaluation]** – Build and log the model to MLflow, run agent evaluation with a synthetic evaluation dataset, register the model to Unity Catalog, and deploy it to a serving endpoint.
 7. **[`dash-chatbot-app`]** – Launch the chatbot UI to interact with your agent.
 

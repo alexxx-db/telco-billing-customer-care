@@ -77,8 +77,6 @@ config['tools_items'] = config['catalog']+'.'+config['database']+'.lookup_billin
 config['tools_plans'] = config['catalog']+'.'+config['database']+'.lookup_billing_plans'
 config['tools_customer'] = config['catalog']+'.'+config['database']+'.lookup_customer'
 config['tools_anomalies'] = config['catalog']+'.'+config['database']+'.lookup_billing_anomalies'
-config['tools_alerts'] = config['catalog']+'.'+config['database']+'.lookup_billing_alerts'
-config['tools_new_alerts'] = config['catalog']+'.'+config['database']+'.lookup_new_alerts'
 config['tools_monitoring_status'] = config['catalog']+'.'+config['database']+'.get_monitoring_status'
 
 # Continuous monitoring
@@ -92,11 +90,11 @@ config['dlt_running_table'] = config['catalog']+'.'+config['database']+'.billing
 config['genie_space_name'] = 'Telco Billing Analytics'
 config['genie_space_description'] = (
     'Natural language analytics over telco billing data. '
-    'Includes invoice_analytics with monthly charge breakdowns per customer (roaming, international, data overage, plan info), '
-    'billing_plans with plan pricing, data limits, and allowances, '
-    'and billing_anomalies with detected billing anomalies (charge spikes, roaming spikes, data overages). '
-    'Tables join via plan_name. Invoice has monthly granularity per customer_id. '
-    'PII fields (names, emails, phone numbers) are excluded.'
+    'Includes invoice_analytics (monthly charges per customer), billing_plans (pricing and allowances), '
+    'billing_anomalies (detected charge spikes and roaming spikes), '
+    'billing_monitoring_state (alert dispatch audit log with severity and delivery status), '
+    'and billing_monthly_running (real-time streaming charge estimates per customer per month). '
+    'Tables join via plan_name and customer_id. PII fields are excluded.'
 )
 config['genie_space_tables'] = [
     config['catalog'] + '.' + config['database'] + '.invoice_analytics',

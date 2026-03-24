@@ -10,7 +10,6 @@
 
 import dlt
 import pyspark.sql.functions as F
-from pyspark.sql.window import Window
 
 # DLT pipelines cannot use %run or dbutils; config is passed via pipeline parameters
 catalog = spark.conf.get("pipeline.catalog", "cme_demos_alex_barreto")

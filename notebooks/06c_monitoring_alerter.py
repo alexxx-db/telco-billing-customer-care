@@ -83,13 +83,22 @@ for _, row in unalerted_pd.iterrows():
         f"Anomaly ID: {row['anomaly_id']}"
     )
 
+    # Derive severity from total_charges relative to typical amounts
+    total = row["total_charges"] if row["total_charges"] else 0
+    if total > 200:
+        severity = "CRITICAL"
+    elif total > 100:
+        severity = "HIGH"
+    else:
+        severity = "MEDIUM"
+
     alert_records.append({
         "alert_id":       str(uuid.uuid4()),
         "anomaly_id":     row["anomaly_id"],
         "customer_id":    int(customer_id),
         "event_month":    event_month,
         "anomaly_type":   anomaly_type,
-        "severity":       anomaly_type,  # Use anomaly_type as proxy since our table lacks severity
+        "severity":       severity,
         "alert_channel":  "dashboard",
         "alert_sent_ts":  now_ts,
         "alert_content":  alert_content,

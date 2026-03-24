@@ -105,11 +105,18 @@ else:
 # COMMAND ----------
 
 # DBTITLE 1,Save Pipeline ID to Config
+# Read the raw YAML text and update dlt_pipeline_id in-place to preserve formatting
 with open("config.yaml", "r") as f:
-    cfg = yaml.safe_load(f)
-cfg["dlt_pipeline_id"] = pipeline_id
+    yaml_text = f.read()
+
+if "dlt_pipeline_id:" in yaml_text:
+    import re
+    yaml_text = re.sub(r"dlt_pipeline_id:.*", f"dlt_pipeline_id: '{pipeline_id}'", yaml_text)
+else:
+    yaml_text += f"\ndlt_pipeline_id: '{pipeline_id}'\n"
+
 with open("config.yaml", "w") as f:
-    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+    f.write(yaml_text)
 
 config['dlt_pipeline_id'] = pipeline_id
 

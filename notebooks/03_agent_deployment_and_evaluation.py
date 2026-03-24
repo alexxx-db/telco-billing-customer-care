@@ -95,10 +95,6 @@ Guidelines:
 - To check for billing anomalies (charge spikes, roaming spikes, international spikes,
   data overage spikes), use the lookup_billing_anomalies tool. You can look up anomalies for
   a specific customer or pass an empty string to see recent anomalies across all customers.
-- For near-real-time billing alerts from the streaming monitor, use lookup_billing_alerts.
-  Filter by customer_id and/or severity (CRITICAL, HIGH, MEDIUM).
-- To check what is new, use lookup_new_alerts with the number of hours to look back
-  (e.g., 24 for the last day, 1 for the last hour).
 - When asked "what's new?", "any updates?", "what happened since yesterday?",
   call get_monitoring_status(24) first, then summarize conversationally.
   Do not ask for a customer_id for these fleet-wide monitoring questions.
@@ -113,7 +109,7 @@ Process:
 2. If no FAQ match, ask for the customer_id and use the relevant tool(s) to fetch billing details.
 3. For analytical questions across multiple customers, use ask_billing_analytics.
 4. When asked about unusual charges or billing anomalies, use lookup_billing_anomalies.
-5. When asked about recent or real-time alerts, use lookup_billing_alerts or lookup_new_alerts.
+5. When asked about monitoring status or what's new, use get_monitoring_status.
 6. If missing details (e.g., timeframe), ask clarifying questions.
 
 Keep responses polite, professional, and concise.
@@ -133,8 +129,6 @@ tools_items = config['tools_items']
 tools_plans = config['tools_plans']
 tools_customer = config['tools_customer']
 tools_anomalies = config['tools_anomalies']
-tools_alerts = config['tools_alerts']
-tools_new_alerts = config['tools_new_alerts']
 tools_monitoring_status = config['tools_monitoring_status']
 agent_name = config['agent_name']
 genie_space_id = config.get('genie_space_id', '') or ''
@@ -155,8 +149,6 @@ yaml_data = {
     "tools_plans": tools_plans,
     "tools_customer": tools_customer,
     "tools_anomalies": tools_anomalies,
-    "tools_alerts": tools_alerts,
-    "tools_new_alerts": tools_new_alerts,
     "tools_monitoring_status": tools_monitoring_status,
     "agent_name": agent_name,
     "genie_space_id": genie_space_id,
@@ -239,8 +231,6 @@ with open("config.yaml", "w") as f:
 # MAGIC     config['tools_plans'],
 # MAGIC     config['tools_customer'],
 # MAGIC     config['tools_anomalies'],
-# MAGIC     config['tools_alerts'],
-# MAGIC     config['tools_new_alerts'],
 # MAGIC     config['tools_monitoring_status'],
 # MAGIC     ]
 # MAGIC uc_toolkit = UCFunctionToolkit(function_names=uc_tool_names)

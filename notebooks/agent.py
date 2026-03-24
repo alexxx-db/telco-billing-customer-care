@@ -1,6 +1,8 @@
 from typing import Any, Generator, Optional, Sequence, Union
+import time
 
 import mlflow
+from databricks.sdk import WorkspaceClient
 from databricks_langchain import (
     ChatDatabricks,
     VectorSearchRetrieverTool,
@@ -10,7 +12,7 @@ from databricks_langchain import (
 )
 from langchain_core.language_models import LanguageModelLike
 from langchain_core.runnables import RunnableConfig, RunnableLambda
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.graph import CompiledGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -61,6 +63,71 @@ uc_tool_names = [
     ]
 uc_toolkit = UCFunctionToolkit(function_names=uc_tool_names)
 tools.extend(uc_toolkit.tools)
+
+###############################################################################
+## Genie Space tool for ad-hoc billing analytics
+## This tool delegates complex analytical questions to a Databricks Genie Space
+## that can generate and execute SQL over the full billing dataset.
+###############################################################################
+genie_space_id = config.get('genie_space_id', '')
+
+if genie_space_id:
+    @tool
+    def ask_billing_analytics(question: str) -> str:
+        """Ask an ad-hoc billing analytics question using natural language.
+        Use this tool for complex analytical questions that span multiple customers
+        or require aggregations across the billing dataset, such as:
+        - Revenue and charge trends over time
+        - Plan comparisons and averages
+        - Top-N customer rankings
+        - Customer segmentation by charges or plan type
+        - Month-over-month or period-over-period analysis
+
+        Do NOT use this for individual customer lookups — use the dedicated
+        lookup_customer, lookup_billing, or lookup_billing_items tools instead.
+        """
+        w = WorkspaceClient()
+
+        response = w.genie.start_conversation(
+            space_id=genie_space_id,
+            content=question,
+        )
+
+        conversation_id = response.conversation_id
+        message_id = response.message_id
+
+        # Poll for completion (Genie queries are async)
+        max_attempts = 30
+        for _ in range(max_attempts):
+            result = w.genie.get_message(
+                space_id=genie_space_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+            )
+            if hasattr(result, 'status') and result.status in ("COMPLETED", "FAILED"):
+                break
+            time.sleep(2)
+
+        if hasattr(result, 'status') and result.status == "FAILED":
+            return "The analytics query could not be completed. Please try rephrasing your question."
+
+        # Extract results from attachments
+        if hasattr(result, 'attachments') and result.attachments:
+            parts = []
+            for att in result.attachments:
+                if hasattr(att, 'text') and att.text:
+                    parts.append(att.text.content)
+                if hasattr(att, 'query') and att.query:
+                    if att.query.description:
+                        parts.append(att.query.description)
+                    if att.query.query:
+                        parts.append(f"SQL: {att.query.query}")
+            if parts:
+                return "\n\n".join(parts)
+
+        return "No results found for your analytics question."
+
+    tools.append(ask_billing_analytics)
 
 #####################
 ## Define agent logic

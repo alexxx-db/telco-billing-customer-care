@@ -87,11 +87,18 @@ Guidelines:
 - If no FAQ match, request the customer_id before retrieving billing details.
 - NEVER disclose confidential information in your responses, including: customer_name, email, device_id, or phone_number. These fields are for internal lookup only.
 - If a user asks for confidential fields, politely decline and explain that you cannot share that information.
+- For ad-hoc analytical questions that span multiple customers or require aggregations
+  (e.g., trends, averages, comparisons across plans, top-N rankings), use the
+  ask_billing_analytics tool. This delegates to a Genie Space that can write SQL
+  over the full billing dataset.
+- For individual customer lookups (specific customer's bill, plan, etc.), use the
+  dedicated lookup tools.
 
 Process:
 1. Run FAQ Search -> If an answer exists, return it.
 2. If no FAQ match, ask for the customer_id and use the relevant tool(s) to fetch billing details.
-3. If missing details (e.g., timeframe), ask clarifying questions.
+3. For analytical questions across multiple customers, use ask_billing_analytics.
+4. If missing details (e.g., timeframe), ask clarifying questions.
 
 Keep responses polite, professional, and concise.
 """
@@ -110,6 +117,7 @@ tools_items = config['tools_items']
 tools_plans = config['tools_plans']
 tools_customer = config['tools_customer']
 agent_name = config['agent_name']
+genie_space_id = config.get('genie_space_id', '') or ''
 agent_prompt = LiteralString(system_prompt)
 
 # COMMAND ----------
@@ -127,6 +135,7 @@ yaml_data = {
     "tools_plans": tools_plans,
     "tools_customer": tools_customer,
     "agent_name": agent_name,
+    "genie_space_id": genie_space_id,
     "agent_prompt": agent_prompt
 }
 
@@ -145,8 +154,10 @@ with open("config.yaml", "w") as f:
 
 # MAGIC %%writefile agent.py
 # MAGIC from typing import Any, Generator, Optional, Sequence, Union
+# MAGIC import time
 # MAGIC
 # MAGIC import mlflow
+# MAGIC from databricks.sdk import WorkspaceClient
 # MAGIC from databricks_langchain import (
 # MAGIC     ChatDatabricks,
 # MAGIC     VectorSearchRetrieverTool,
@@ -156,7 +167,7 @@ with open("config.yaml", "w") as f:
 # MAGIC )
 # MAGIC from langchain_core.language_models import LanguageModelLike
 # MAGIC from langchain_core.runnables import RunnableConfig, RunnableLambda
-# MAGIC from langchain_core.tools import BaseTool
+# MAGIC from langchain_core.tools import BaseTool, tool
 # MAGIC from langgraph.graph import END, StateGraph
 # MAGIC from langgraph.graph.graph import CompiledGraph
 # MAGIC from langgraph.graph.state import CompiledStateGraph
@@ -182,7 +193,6 @@ with open("config.yaml", "w") as f:
 # MAGIC ############################################
 # MAGIC # Define your LLM endpoint and system prompt
 # MAGIC ############################################
-# MAGIC # LLM_ENDPOINT_NAME = LLM_ENDPOINT
 # MAGIC llm = ChatDatabricks(endpoint=config['llm_endpoint'])
 # MAGIC system_prompt = config['agent_prompt']
 # MAGIC
@@ -202,11 +212,76 @@ with open("config.yaml", "w") as f:
 # MAGIC     config['tools_billing_faq'],
 # MAGIC     config['tools_billing'],
 # MAGIC     config['tools_items'],
-# MAGIC     config['tools_plans'],  
+# MAGIC     config['tools_plans'],
 # MAGIC     config['tools_customer']
 # MAGIC     ]
 # MAGIC uc_toolkit = UCFunctionToolkit(function_names=uc_tool_names)
 # MAGIC tools.extend(uc_toolkit.tools)
+# MAGIC
+# MAGIC ###############################################################################
+# MAGIC ## Genie Space tool for ad-hoc billing analytics
+# MAGIC ## This tool delegates complex analytical questions to a Databricks Genie Space
+# MAGIC ## that can generate and execute SQL over the full billing dataset.
+# MAGIC ###############################################################################
+# MAGIC genie_space_id = config.get('genie_space_id', '')
+# MAGIC
+# MAGIC if genie_space_id:
+# MAGIC     @tool
+# MAGIC     def ask_billing_analytics(question: str) -> str:
+# MAGIC         """Ask an ad-hoc billing analytics question using natural language.
+# MAGIC         Use this tool for complex analytical questions that span multiple customers
+# MAGIC         or require aggregations across the billing dataset, such as:
+# MAGIC         - Revenue and charge trends over time
+# MAGIC         - Plan comparisons and averages
+# MAGIC         - Top-N customer rankings
+# MAGIC         - Customer segmentation by charges or plan type
+# MAGIC         - Month-over-month or period-over-period analysis
+# MAGIC
+# MAGIC         Do NOT use this for individual customer lookups — use the dedicated
+# MAGIC         lookup_customer, lookup_billing, or lookup_billing_items tools instead.
+# MAGIC         """
+# MAGIC         w = WorkspaceClient()
+# MAGIC
+# MAGIC         response = w.genie.start_conversation(
+# MAGIC             space_id=genie_space_id,
+# MAGIC             content=question,
+# MAGIC         )
+# MAGIC
+# MAGIC         conversation_id = response.conversation_id
+# MAGIC         message_id = response.message_id
+# MAGIC
+# MAGIC         # Poll for completion (Genie queries are async)
+# MAGIC         max_attempts = 30
+# MAGIC         for _ in range(max_attempts):
+# MAGIC             result = w.genie.get_message(
+# MAGIC                 space_id=genie_space_id,
+# MAGIC                 conversation_id=conversation_id,
+# MAGIC                 message_id=message_id,
+# MAGIC             )
+# MAGIC             if hasattr(result, 'status') and result.status in ("COMPLETED", "FAILED"):
+# MAGIC                 break
+# MAGIC             time.sleep(2)
+# MAGIC
+# MAGIC         if hasattr(result, 'status') and result.status == "FAILED":
+# MAGIC             return "The analytics query could not be completed. Please try rephrasing your question."
+# MAGIC
+# MAGIC         # Extract results from attachments
+# MAGIC         if hasattr(result, 'attachments') and result.attachments:
+# MAGIC             parts = []
+# MAGIC             for att in result.attachments:
+# MAGIC                 if hasattr(att, 'text') and att.text:
+# MAGIC                     parts.append(att.text.content)
+# MAGIC                 if hasattr(att, 'query') and att.query:
+# MAGIC                     if att.query.description:
+# MAGIC                         parts.append(att.query.description)
+# MAGIC                     if att.query.query:
+# MAGIC                         parts.append(f"SQL: {att.query.query}")
+# MAGIC             if parts:
+# MAGIC                 return "\n\n".join(parts)
+# MAGIC
+# MAGIC         return "No results found for your analytics question."
+# MAGIC
+# MAGIC     tools.append(ask_billing_analytics)
 # MAGIC
 # MAGIC #####################
 # MAGIC ## Define agent logic
@@ -352,23 +427,27 @@ import mlflow
 from agent import tools
 from databricks_langchain import VectorSearchRetrieverTool
 from mlflow.models.resources import (
-    DatabricksFunction, 
+    DatabricksFunction,
+    DatabricksGenieSpace,
     DatabricksServingEndpoint,
-    DatabricksVectorSearchIndex
+    DatabricksVectorSearchIndex,
 )
 from pkg_resources import get_distribution
 from unitycatalog.ai.langchain.toolkit import UnityCatalogTool
 
 resources = [
     DatabricksServingEndpoint(endpoint_name=config['llm_endpoint']),
-    DatabricksVectorSearchIndex(index_name=config['vector_search_index'])
+    DatabricksVectorSearchIndex(index_name=config['vector_search_index']),
 ]
+
+# Add Genie Space resource for auth passthrough if configured
+if config.get('genie_space_id'):
+    resources.append(DatabricksGenieSpace(genie_space_id=config['genie_space_id']))
+
 for tool in tools:
     if isinstance(tool, VectorSearchRetrieverTool):
         resources.extend(tool.resources)
     elif isinstance(tool, UnityCatalogTool):
-        # TODO: If the UC function includes dependencies like external connection or vector search, please include them manually.
-        # See the TODO in the markdown above for more information.
         resources.append(DatabricksFunction(function_name=tool.uc_function_name))
 
 input_example = {
@@ -389,6 +468,7 @@ with mlflow.start_run():
         resources=resources,
         pip_requirements=[
             f"databricks-connect=={get_distribution('databricks-connect').version}",
+            f"databricks-sdk=={get_distribution('databricks-sdk').version}",
             f"mlflow=={get_distribution('mlflow').version}",
             f"databricks-langchain=={get_distribution('databricks-langchain').version}",
             f"langgraph=={get_distribution('langgraph').version}",

@@ -1,0 +1,8 @@
+# Add model serving endpoint resource key "serving-endpoint" with CAN QUERY in the app settings.
+command:
+  - python
+  - app.py
+
+env:
+  - name: SERVING_ENDPOINT
+    valueFrom: serving-endpoint

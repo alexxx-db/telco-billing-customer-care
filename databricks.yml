@@ -9,6 +9,8 @@
 #
 # Override endpoint name:
 #   databricks bundle deploy --var serving_endpoint_name=my_agent_endpoint
+#
+# Gradio UI: bundle run gradio_chatbot_app
 
 bundle:
   name: customer_billing_accelerator
@@ -27,6 +29,15 @@ resources:
       name: billing-chatbot
       description: Dash chat UI for the customer billing AI agent
       source_code_path: ./apps/dash-chatbot-app
+      resources:
+        - name: serving-endpoint
+          serving_endpoint:
+            name: ${var.serving_endpoint_name}
+            permission: CAN_QUERY
+    gradio_chatbot_app:
+      name: billing-gradio-chat
+      description: Gradio chat UI for the customer billing AI agent
+      source_code_path: ./apps/gradio-chatbot-app
       resources:
         - name: serving-endpoint
           serving_endpoint:

@@ -54,7 +54,13 @@ Sachin Patil <sachin.patil@databricks.com>
 | `10_domain_config` | Domain adapter: reads domain YAML from `notebooks/domains/`, creates canonical views, regenerates UC tools. Run with `domain` = `telco` / `saas` / `utility`. |
 | `10a_validate_domain` | Validates deployed domain: checks canonical views, UC tools, charge column alignment. |
 | `11_persona_config` | Validates all persona YAML configs from `notebooks/personas/`, serializes persona metadata to config.yaml. |
-| `dash-chatbot-app/` | A simple Dash web app that lets users chat with the deployed agent using the Databricks Apps framework. |
+| `12_deploy_dash_chatbot_app` | Creates or updates the **Databricks App** for the Dash UI, binds the model serving endpoint, deploys `apps/dash-chatbot-app` from the workspace, and starts compute. |
+| `13_deploy_gradio_chatbot_app` | Same as **12** for the **Gradio** UI (`apps/gradio-chatbot-app`); default app name `billing-gradio-chat`. |
+| `dash-chatbot-app/` | Dash web app source; `app.yaml` + `app.py` run on Databricks Apps. |
+| `gradio-chatbot-app/` | Gradio web app source; same serving endpoint + `model_serving_utils` contract as Dash. |
+| `scripts/workspace_app_deploy.py` | Shared SDK helpers (`deploy_serving_endpoint_app`) used by the deploy scripts below. |
+| `scripts/deploy_dash_chatbot_app.py` | Same deployment flow as notebook **12** from a local machine (requires `--source-code-path` under `/Workspace/...`). |
+| `scripts/deploy_gradio_chatbot_app.py` | Same as **13** from a local machine for `apps/gradio-chatbot-app`. |
 
 ---
 
@@ -70,19 +76,34 @@ Follow the notebooks in **numerical order** for a smooth end-to-end experience:
 6. **[03_agent_deployment_and_evaluation]** – Build and log the LangGraph agent to MLflow, run agent evaluation, register to Unity Catalog, and deploy to a serving endpoint.
 7. **[04_agent_bricks_deployment]** – Deploy as an Agent Bricks Supervisor Agent (KA + Genie Space) for a fully managed multi-agent experience.
 8. **[05_billing_anomaly_detection]** – Run anomaly detection pipeline, create UC function tool and Genie table, then redeploy agent.
-9. **[`dash-chatbot-app`]** – Launch the chatbot UI to interact with your agent (local or Databricks Apps).
+9. **[`dash-chatbot-app`]** – Run the chatbot locally (set `SERVING_ENDPOINT`) or deploy to Databricks Apps.
+10. **[12_deploy_dash_chatbot_app]** – Deploy the Dash app to **Databricks Apps** (SDK: create app, bind serving endpoint, deploy source, start compute). Requires the repo layout `apps/dash-chatbot-app` next to `notebooks/` in the workspace (e.g. Repos clone).
+11. **[13_deploy_gradio_chatbot_app]** – Deploy the **Gradio** alternative UI (`apps/gradio-chatbot-app`); workspace app name defaults to **`billing-gradio-chat`** so it can run alongside the Dash app.
 
 ### Deploy the Dash app (Databricks Asset Bundles)
 
-After the agent serving endpoint exists (notebook **03**), the bundle at the project root (`databricks.yml`) defines the **billing-chatbot** app and grants **CAN QUERY** on the model serving endpoint named by `serving_endpoint_name` (default `ai_customer_billing_agent`, matching `000-config`). The app’s `app.yaml` maps that resource to `SERVING_ENDPOINT`.
+After the agent serving endpoint exists (notebook **03**), the bundle at the project root (`databricks.yml`) defines the **billing-chatbot** (Dash) and **billing-gradio-chat** (Gradio) apps and grants **CAN QUERY** on the model serving endpoint named by `serving_endpoint_name` (default `ai_customer_billing_agent`, matching `000-config`). Each app’s `app.yaml` maps that resource to `SERVING_ENDPOINT`.
 
 ```bash
 databricks bundle validate
 databricks bundle deploy --var serving_endpoint_name=<your-endpoint-name>
 databricks bundle run billing_chatbot_app
+databricks bundle run gradio_chatbot_app
 ```
 
-If the app does not start on compute automatically, use **Compute → Apps** in the workspace or `databricks apps deploy billing-chatbot --profile <profile>`. In GitHub Actions, set repository variable **SERVING_ENDPOINT_NAME** when the endpoint name differs from the default.
+If the app does not start on compute automatically, use **Compute → Apps** in the workspace or `databricks apps deploy <app-name> --profile <profile>`. In GitHub Actions, set repository variable **SERVING_ENDPOINT_NAME** when the endpoint name differs from the default.
+
+From the command line (same behavior as notebooks **12** / **13**), after authenticating the CLI:
+
+```bash
+python scripts/deploy_dash_chatbot_app.py \
+  --source-code-path /Workspace/Users/you@example.com/Repos/org/repo/apps/dash-chatbot-app \
+  --serving-endpoint ai_customer_billing_agent
+
+python scripts/deploy_gradio_chatbot_app.py \
+  --source-code-path /Workspace/Users/you@example.com/Repos/org/repo/apps/gradio-chatbot-app \
+  --serving-endpoint ai_customer_billing_agent
+```
 
 ---
 
@@ -92,7 +113,7 @@ If the app does not start on compute automatically, use **Compute → Apps** in 
 - **Evaluation-first approach**: Includes synthetic question generation and MLflow integration for benchmarking agent performance.
 - **Built-in vector search**: FAQ retrieval using vector search index and semantic similarity.
 - **Fully governed**: Unity Catalog integration for tool and model registration.
-- **Deployable UI**: Lightweight Dash app included for real-world usage and demoing.
+- **Deployable UI**: Dash and Gradio apps included for real-world usage and demoing on Databricks Apps.
 
 <p align="center">
   <img src="./images/chatbot.jpg" alt="Billing Assistant Diagram" width="600"/>
@@ -104,7 +125,7 @@ If the app does not start on compute automatically, use **Compute → Apps** in 
 
 - Databricks workspace with Unity Catalog enabled
 - Access to Databricks Vector Search & Serving Endpoints
-- Installed: `databricks-sdk`, `databricks-vectorsearch`, `mlflow`, `dash`, `langchain`, etc.
+- Installed: `databricks-sdk`, `databricks-vectorsearch`, `mlflow`, `dash`, `gradio`, `langchain`, etc.
 - Cluster or SQL Warehouse to execute notebooks
 - Recommended Databricks Runtime: 15.4 ML
 

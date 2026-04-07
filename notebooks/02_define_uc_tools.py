@@ -72,7 +72,7 @@ RETURN (
     plan,
     contract_start_dt
   FROM {CATALOG}.{SCHEMA}.customers
-  WHERE customer_id = CAST(input_id AS DECIMAL)
+  WHERE customer_id = TRY_CAST(input_id AS DECIMAL)
 );
 """
 spark.sql(sqlstr_lkp_customer)
@@ -115,7 +115,7 @@ RETURN (
     event_ts,
     contract_start_dt 
   FROM {CATALOG}.{SCHEMA}.billing_items
-  WHERE device_id = CAST(input_id AS DECIMAL)
+  WHERE device_id = TRY_CAST(input_id AS DECIMAL)
   ORDER BY event_ts DESC
 );
 """
@@ -228,7 +228,7 @@ SELECT
     international_text_charges,
     total_charges
 FROM {CATALOG}.{SCHEMA}.invoice
-WHERE  customer_id = CAST(input_customer AS DECIMAL)
+WHERE  customer_id = TRY_CAST(input_customer AS DECIMAL)
 ORDER BY event_month DESC;
 """
 spark.sql(sqlstr_lkp_billing)
@@ -637,7 +637,7 @@ RETURN (
          payment_terms_days, account_status, ar_balance_usd,
          overdue_balance_usd, erp_segment, erp_source_system
   FROM {CATALOG}.{SCHEMA}.silver_customer_account_dims
-  WHERE customer_id = CAST(input_customer_id AS BIGINT)
+  WHERE customer_id = TRY_CAST(input_customer_id AS BIGINT)
 );
 """)
 
@@ -668,7 +668,7 @@ RETURN (
          erp_collected_revenue_usd, erp_overdue_revenue_usd,
          revenue_variance_usd, revenue_variance_pct
   FROM {CATALOG}.{SCHEMA}.gold_revenue_attribution
-  WHERE customer_id = CAST(input_customer_id AS BIGINT)
+  WHERE customer_id = TRY_CAST(input_customer_id AS BIGINT)
     AND (month_filter = '' OR event_month = month_filter)
   ORDER BY event_month DESC
 );
@@ -745,7 +745,7 @@ RETURN (
   SELECT dispute_id, customer_id, dispute_type, status,
          description, disputed_amount_usd, created_at, anomaly_id
   FROM {CATALOG}.{SCHEMA}.billing_disputes
-  WHERE (input_customer_id = '' OR customer_id = CAST(input_customer_id AS BIGINT))
+  WHERE (input_customer_id = '' OR customer_id = TRY_CAST(input_customer_id AS BIGINT))
     AND status NOT IN ('RESOLVED_CREDIT', 'RESOLVED_NO_ACTION', 'CLOSED')
   ORDER BY created_at DESC LIMIT 50
 );

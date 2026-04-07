@@ -61,7 +61,6 @@ from pathlib import Path as _Path
 
 _PERSONA_PROMPTS: dict[str, str] = {}
 _PERSONA_TOOLS: dict[str, list[str]] = {}
-_PERSONA_AGENTS: dict[str, CompiledGraph] = {}
 
 
 def _load_personas() -> None:
@@ -376,11 +375,37 @@ def _get_msg_content(msg) -> str:
 ## ChatAgent Wrapper (exported as AGENT)
 ###############################################################################
 
+def _filter_tools_for_persona(persona: str) -> list[BaseTool]:
+    """Return the subset of tools allowed for the given persona."""
+    allowed = _PERSONA_TOOLS.get(persona)
+    if not allowed:
+        # No restriction defined — grant all tools (default for customer_care
+        # or when persona YAMLs aren't loaded)
+        return tools
+    tool_name_set = set(allowed)
+    filtered = [t for t in tools if t.name in tool_name_set]
+    return filtered if filtered else tools
+
+
 class BillingChatAgent(ChatAgent):
     """Telco Billing Chat Agent backed by a LangGraph tool-calling loop."""
 
     def __init__(self):
-        self._graph = _build_graph(llm, tools, system_prompt)
+        # Default graph with all tools (customer_care persona)
+        self._default_graph = _build_graph(llm, tools, system_prompt)
+        # Cache persona-specific graphs to avoid rebuilding on every request
+        self._persona_graphs: dict[str, CompiledStateGraph] = {}
+
+    def _get_graph(self, custom_inputs: Optional[dict[str, Any]] = None) -> CompiledStateGraph:
+        """Return a compiled graph for the requested persona."""
+        persona = (custom_inputs or {}).get("persona", DEFAULT_PERSONA)
+        if persona == DEFAULT_PERSONA and not _PERSONA_TOOLS.get(persona):
+            return self._default_graph
+        if persona not in self._persona_graphs:
+            persona_tools = _filter_tools_for_persona(persona)
+            persona_prompt = _PERSONA_PROMPTS.get(persona, system_prompt)
+            self._persona_graphs[persona] = _build_graph(llm, persona_tools, persona_prompt)
+        return self._persona_graphs[persona]
 
     @staticmethod
     def _to_lc_messages(messages):
@@ -404,7 +429,8 @@ class BillingChatAgent(ChatAgent):
         custom_inputs: Optional[dict[str, Any]] = None,
     ) -> ChatAgentResponse:
         lc_msgs = self._to_lc_messages(messages)
-        result = self._graph.invoke({"messages": lc_msgs})
+        graph = self._get_graph(custom_inputs)
+        result = graph.invoke({"messages": lc_msgs})
         last = result["messages"][-1]
         return ChatAgentResponse(
             messages=[ChatAgentMessage(
@@ -421,7 +447,8 @@ class BillingChatAgent(ChatAgent):
         custom_inputs: Optional[dict[str, Any]] = None,
     ) -> Generator[ChatAgentChunk, None, None]:
         lc_msgs = self._to_lc_messages(messages)
-        for event in self._graph.stream(
+        graph = self._get_graph(custom_inputs)
+        for event in graph.stream(
             {"messages": lc_msgs}, stream_mode="updates"
         ):
             for node_data in event.values():

@@ -160,8 +160,9 @@ class DatabricksChatbot:
     def _format_chat_display(self, chat_history):
         return [
             html.Div([
-                html.Div(msg['content'],
-                         className=f"chat-message {msg['role']}-message")
+                dcc.Markdown(msg['content'],
+                             className=f"chat-message {msg['role']}-message",
+                             dangerously_allow_html=False)
             ], className=f"message-container {msg['role']}-container")
             for msg in chat_history if isinstance(msg, dict) and 'role' in msg
         ]

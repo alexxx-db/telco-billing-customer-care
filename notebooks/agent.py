@@ -193,10 +193,110 @@ def confirm_write_operation(token: str) -> str:
     if token not in _pending_writes:
         return "Invalid or expired token. Please re-stage the operation."
     op = _pending_writes.pop(token)
-    return (
-        f"CONFIRMED: {op['action']} executed for {op['target_id']} "
-        f"(customer {op['customer_id']})."
+    return _execute_write(op)
+
+
+def _execute_write(op: dict) -> str:
+    """Execute a write operation via Statement Execution API and log to audit."""
+    catalog_name = config.get("catalog", "")
+    schema_name = config.get("schema", config.get("database", ""))
+    warehouse_id = config.get("warehouse_id", "")
+
+    if not warehouse_id:
+        return "ERROR: warehouse_id not configured. Cannot execute write operations."
+
+    action = op["action"]
+    target_id = op["target_id"]
+    customer_id = op["customer_id"]
+    reason = op.get("reason", "")
+    now_ts = datetime.now(timezone.utc).isoformat()
+    audit_id = str(uuid.uuid4())
+
+    # Build the SQL for the business write
+    if action == "acknowledge_anomaly":
+        sql = (
+            f"UPDATE {catalog_name}.{schema_name}.billing_anomalies "
+            f"SET acknowledged_by = 'agent', "
+            f"acknowledged_at = TIMESTAMP '{now_ts}', "
+            f"acknowledgement_reason = '{reason.replace(chr(39), chr(39)+chr(39))}' "
+            f"WHERE anomaly_id = '{target_id}'"
+        )
+    elif action == "create_dispute":
+        dispute_id = f"DSP-{str(uuid.uuid4())[:8]}"
+        escaped_reason = reason.replace("'", "''")
+        sql = (
+            f"INSERT INTO {catalog_name}.{schema_name}.billing_disputes "
+            f"(dispute_id, customer_id, dispute_type, status, description, "
+            f"created_by, created_at, updated_at) VALUES "
+            f"('{dispute_id}', {customer_id}, 'AGENT_CREATED', 'OPEN', "
+            f"'{escaped_reason}', 'agent', "
+            f"TIMESTAMP '{now_ts}', TIMESTAMP '{now_ts}')"
+        )
+    elif action == "update_dispute_status":
+        escaped_reason = reason.replace("'", "''")
+        sql = (
+            f"UPDATE {catalog_name}.{schema_name}.billing_disputes "
+            f"SET status = '{escaped_reason}', "
+            f"updated_at = TIMESTAMP '{now_ts}' "
+            f"WHERE dispute_id = '{target_id}'"
+        )
+    else:
+        return f"ERROR: Unknown action '{action}'."
+
+    w = WorkspaceClient()
+
+    # Audit record: PENDING
+    w.statement_execution.execute_statement(
+        statement=(
+            f"INSERT INTO {catalog_name}.{schema_name}.billing_write_audit "
+            f"(audit_id, action_type, target_table, target_record_id, customer_id, "
+            f"executed_by, result_status, result_message, executed_at) VALUES "
+            f"('{audit_id}', '{action}', "
+            f"'{catalog_name}.{schema_name}.billing_disputes' , "
+            f"'{target_id}', {customer_id}, 'agent', 'PENDING', "
+            f"'Staged by confirm_write_operation', TIMESTAMP '{now_ts}')"
+        ),
+        warehouse_id=warehouse_id,
+        wait_timeout="10s",
     )
+
+    # Execute the business write
+    try:
+        resp = w.statement_execution.execute_statement(
+            statement=sql,
+            warehouse_id=warehouse_id,
+            wait_timeout="30s",
+        )
+        if resp.status.state == StatementState.SUCCEEDED:
+            result_status = "SUCCESS"
+            result_msg = f"{action} completed for {target_id} (customer {customer_id})."
+        else:
+            result_status = "FAILED"
+            error_detail = resp.status.error.message if resp.status.error else "Unknown error"
+            result_msg = f"{action} failed for {target_id}: {error_detail}"
+    except Exception as e:
+        result_status = "FAILED"
+        result_msg = f"{action} failed for {target_id}: {e}"
+
+    # Audit record: result
+    w.statement_execution.execute_statement(
+        statement=(
+            f"INSERT INTO {catalog_name}.{schema_name}.billing_write_audit "
+            f"(audit_id, action_type, target_table, target_record_id, customer_id, "
+            f"executed_by, sql_statement, result_status, result_message, executed_at) VALUES "
+            f"('{str(uuid.uuid4())}', '{action}', "
+            f"'{catalog_name}.{schema_name}.billing_disputes', "
+            f"'{target_id}', {customer_id}, 'agent', "
+            f"'{sql.replace(chr(39), chr(39)+chr(39))}', "
+            f"'{result_status}', '{result_msg.replace(chr(39), chr(39)+chr(39))}', "
+            f"TIMESTAMP '{datetime.now(timezone.utc).isoformat()}')"
+        ),
+        warehouse_id=warehouse_id,
+        wait_timeout="10s",
+    )
+
+    prefix = "CONFIRMED" if result_status == "SUCCESS" else "FAILED"
+    return f"{prefix}: {result_msg}"
 
 
 @tool

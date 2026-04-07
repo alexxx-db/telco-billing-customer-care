@@ -11,9 +11,11 @@
 import dlt
 import pyspark.sql.functions as F
 
-# DLT pipelines cannot use %run or dbutils; config is passed via pipeline parameters
-catalog = spark.conf.get("pipeline.catalog", "cme_demos_alex_barreto")
-schema  = spark.conf.get("pipeline.schema",  "telco_billing_db")
+# DLT pipelines cannot use %run or dbutils; config is passed via pipeline parameters.
+# These parameters MUST be set when creating the pipeline (see 06a_create_dlt_pipeline).
+# No hardcoded defaults — fail fast if pipeline params are missing.
+catalog = spark.conf.get("pipeline.catalog")
+schema  = spark.conf.get("pipeline.schema")
 
 # COMMAND ----------
 

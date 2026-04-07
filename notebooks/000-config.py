@@ -239,3 +239,24 @@ config['mas_instructions'] = """Route queries as follows:
 If the query requires a specific customer's billing details, inform the user that individual lookups require the dedicated customer care tools.
 If unclear, ask the user to clarify."""
 config['mas_tile_id'] = None  # Set by 04_agent_bricks_deployment after creation
+
+# COMMAND ----------
+
+# DBTITLE 1,Validate Required Configuration
+_required_keys = [
+    ('catalog',                        'Data catalog name'),
+    ('database',                       'Schema / database name'),
+    ('llm_endpoint',                   'LLM model serving endpoint'),
+    ('embedding_model_endpoint_name',  'Embedding model endpoint'),
+    ('warehouse_id',                   'SQL warehouse ID'),
+]
+_missing = [
+    f"  - {key}: {desc}"
+    for key, desc in _required_keys
+    if not config.get(key)
+]
+if _missing:
+    _msg = "Missing required configuration:\n" + "\n".join(_missing)
+    print(f"WARNING: {_msg}")
+else:
+    print(f"Config validated: catalog={config['catalog']}, schema={config['database']}")

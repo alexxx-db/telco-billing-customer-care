@@ -451,12 +451,20 @@ class BillingChatAgent(ChatAgent):
     ) -> ChatAgentResponse:
         lc_msgs = self._to_lc_messages(messages)
         graph = self._get_graph(custom_inputs)
-        result = graph.invoke({"messages": lc_msgs})
-        last = result["messages"][-1]
+        try:
+            result = graph.invoke({"messages": lc_msgs})
+            last = result["messages"][-1]
+            content = _get_msg_content(last)
+        except Exception as e:
+            content = (
+                "I'm sorry, I encountered an error processing your request. "
+                "Please try again or rephrase your question."
+            )
+            print(f"ERROR in predict: {e}")
         return ChatAgentResponse(
             messages=[ChatAgentMessage(
                 role="assistant",
-                content=_get_msg_content(last),
+                content=content,
                 id=str(uuid.uuid4()),
             )]
         )
@@ -469,20 +477,33 @@ class BillingChatAgent(ChatAgent):
     ) -> Generator[ChatAgentChunk, None, None]:
         lc_msgs = self._to_lc_messages(messages)
         graph = self._get_graph(custom_inputs)
-        for event in graph.stream(
-            {"messages": lc_msgs}, stream_mode="updates"
-        ):
-            for node_data in event.values():
-                for msg in node_data.get("messages", []):
-                    text = _get_msg_content(msg)
-                    if text:
-                        yield ChatAgentChunk(
-                            delta=ChatAgentMessage(
-                                role="assistant",
-                                content=text,
-                                id=str(uuid.uuid4()),
+        try:
+            for event in graph.stream(
+                {"messages": lc_msgs}, stream_mode="updates"
+            ):
+                for node_data in event.values():
+                    for msg in node_data.get("messages", []):
+                        text = _get_msg_content(msg)
+                        if text:
+                            yield ChatAgentChunk(
+                                delta=ChatAgentMessage(
+                                    role="assistant",
+                                    content=text,
+                                    id=str(uuid.uuid4()),
+                                )
                             )
-                        )
+        except Exception as e:
+            print(f"ERROR in predict_stream: {e}")
+            yield ChatAgentChunk(
+                delta=ChatAgentMessage(
+                    role="assistant",
+                    content=(
+                        "I'm sorry, I encountered an error processing your request. "
+                        "Please try again or rephrase your question."
+                    ),
+                    id=str(uuid.uuid4()),
+                )
+            )
 
 
 # ── Module-level exports ────────────────────────────────────────────────────

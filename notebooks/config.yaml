@@ -174,4 +174,21 @@ personas:
     - Show me job reliability for our billing pipelines in the last 30 days.
     - What write operations has the agent performed in the last 24 hours?
 default_persona: customer_care
+
+# --- EchoStar Identity Propagation ---
+identity_secret_scope: echostar-identity
+identity_secret_key: hmac-secret
+identity_context_ttl_minutes: 15
+identity_default_mode: preferred  # required | preferred | none
+persona_group_map:
+  customer_care: []  # No group restriction (default persona)
+  finance_ops:
+    - billing_finance
+    - billing_leadership
+  executive:
+    - billing_leadership
+    - c_suite
+  technical:
+    - platform_engineering
+    - data_engineering
 persona_config_path: /Workspace/Users/alex.barreto@databricks.com/rcg/customer-billing-accelerator/notebooks/personas

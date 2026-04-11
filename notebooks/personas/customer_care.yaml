@@ -4,6 +4,7 @@ persona:
   ui_label: "Customer Support"
   ui_description: "Handle individual customer billing inquiries, disputes, and plan questions."
   ui_icon: "user"
+  required_groups: []
 
 system_prompt: |
   You are a Billing Support Agent assisting customer service representatives and customers

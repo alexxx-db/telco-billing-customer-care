@@ -2,9 +2,27 @@ from typing import Any, Generator, Optional, Sequence, Union
 import time
 import json
 import uuid
+import logging
 from datetime import datetime, timezone
 
 import mlflow
+
+try:
+    from identity_utils import (
+        RequestContext, validate_request_context, check_tool_authorization,
+        require_user_context, resolve_asset_policy, get_identity_secret,
+        validate_persona_for_user, IdentityError, AuthorizationError,
+        AssetPolicy,
+    )
+except ImportError:
+    from notebooks.identity_utils import (
+        RequestContext, validate_request_context, check_tool_authorization,
+        require_user_context, resolve_asset_policy, get_identity_secret,
+        validate_persona_for_user, IdentityError, AuthorizationError,
+        AssetPolicy,
+    )
+
+logger = logging.getLogger(__name__)
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 from databricks_langchain import (
@@ -167,6 +185,20 @@ _pending_writes: dict[str, dict] = {}
 _pending_writes_lock = _threading.Lock()
 _TOKEN_TTL_SECONDS = 600  # 10-minute expiry for unconfirmed tokens
 
+# Thread-local storage for the current request's identity context.
+# Set in predict(), read by tools during the same request.
+_request_context_local = _threading.local()
+
+
+def _set_request_context(ctx: Optional[RequestContext]) -> None:
+    """Store the validated RequestContext for the current request thread."""
+    _request_context_local.ctx = ctx
+
+
+def _get_request_context() -> Optional[RequestContext]:
+    """Retrieve the current request's RequestContext, or None."""
+    return getattr(_request_context_local, "ctx", None)
+
 
 def _cleanup_expired_tokens() -> None:
     now = datetime.now(timezone.utc)
@@ -208,14 +240,38 @@ def request_write_confirmation(
 def confirm_write_operation(token: str) -> str:
     """Execute a previously staged write after user confirms.
     token: the confirmation token from request_write_confirmation"""
+    # HARD GUARD 1: require valid pending-write token
     with _pending_writes_lock:
         if token not in _pending_writes:
-            return "Invalid or expired token. Please re-stage the operation."
+            return "BLOCKED: Invalid or expired token. Stage the operation again with request_write_confirmation."
         op = _pending_writes.pop(token)
-    return _execute_write(op)
+
+    # HARD GUARD 2: require valid user context
+    ctx = _get_request_context()
+    if ctx is None:
+        # Put the token back — don't consume it without executing
+        with _pending_writes_lock:
+            _pending_writes[token] = op
+        return "BLOCKED: No authenticated user context. Cannot execute write operations without user identity."
+
+    return _execute_write(
+        op,
+        initiating_user=ctx.user_email,
+        executing_principal="billing-agent-sp",
+        session_id=ctx.session_id,
+        request_id=ctx.request_id,
+        persona=ctx.persona,
+    )
 
 
-def _execute_write(op: dict) -> str:
+def _execute_write(
+    op: dict,
+    initiating_user: str = "UNKNOWN",
+    executing_principal: str = "billing-agent-sp",
+    session_id: str = "",
+    request_id: str = "",
+    persona: str = "",
+) -> str:
     """Execute a write operation via Statement Execution API and log to audit."""
     catalog_name = config.get("catalog", "")
     schema_name = config.get("schema", config.get("database", ""))
@@ -264,16 +320,21 @@ def _execute_write(op: dict) -> str:
 
     w = WorkspaceClient()
 
+    identity_degraded = initiating_user == "UNKNOWN"
+
     # Audit record: PENDING
     w.statement_execution.execute_statement(
         statement=(
             f"INSERT INTO {catalog_name}.{schema_name}.billing_write_audit "
             f"(audit_id, action_type, target_table, target_record_id, customer_id, "
-            f"executed_by, result_status, result_message, executed_at) VALUES "
+            f"executed_by, result_status, result_message, executed_at, "
+            f"initiating_user, executing_principal, persona, request_id, identity_degraded) VALUES "
             f"('{audit_id}', '{action}', "
             f"'{catalog_name}.{schema_name}.billing_disputes' , "
             f"'{target_id}', {customer_id}, 'agent', 'PENDING', "
-            f"'Staged by confirm_write_operation', TIMESTAMP '{now_ts}')"
+            f"'Staged by confirm_write_operation', TIMESTAMP '{now_ts}', "
+            f"'{initiating_user}', '{executing_principal}', '{persona}', "
+            f"'{request_id}', {str(identity_degraded).lower()})"
         ),
         warehouse_id=warehouse_id,
         wait_timeout="10s",
@@ -302,13 +363,16 @@ def _execute_write(op: dict) -> str:
         statement=(
             f"INSERT INTO {catalog_name}.{schema_name}.billing_write_audit "
             f"(audit_id, action_type, target_table, target_record_id, customer_id, "
-            f"executed_by, sql_statement, result_status, result_message, executed_at) VALUES "
+            f"executed_by, sql_statement, result_status, result_message, executed_at, "
+            f"initiating_user, executing_principal, persona, request_id, identity_degraded) VALUES "
             f"('{str(uuid.uuid4())}', '{action}', "
             f"'{catalog_name}.{schema_name}.billing_disputes', "
             f"'{target_id}', {customer_id}, 'agent', "
             f"'{sql.replace(chr(39), chr(39)+chr(39))}', "
             f"'{result_status}', '{result_msg.replace(chr(39), chr(39)+chr(39))}', "
-            f"TIMESTAMP '{datetime.now(timezone.utc).isoformat()}')"
+            f"TIMESTAMP '{datetime.now(timezone.utc).isoformat()}', "
+            f"'{initiating_user}', '{executing_principal}', '{persona}', "
+            f"'{request_id}', {str(identity_degraded).lower()})"
         ),
         warehouse_id=warehouse_id,
         wait_timeout="10s",
@@ -398,6 +462,17 @@ def _get_msg_content(msg) -> str:
 
 def _filter_tools_for_persona(persona: str) -> list[BaseTool]:
     """Return the subset of tools allowed for the given persona."""
+    # Validate persona-group binding if user context exists
+    ctx = _get_request_context()
+    if ctx:
+        persona_groups = config.get("persona_group_map", {})
+        if persona_groups and not validate_persona_for_user(persona, ctx.user_groups, persona_groups):
+            logger.warning(
+                f"User {ctx.user_email} groups {ctx.user_groups} "
+                f"not authorized for persona {persona}. Falling back to customer_care."
+            )
+            persona = "customer_care"
+
     allowed = _PERSONA_TOOLS.get(persona)
     if not allowed:
         # No restriction defined — grant all tools (default for customer_care
@@ -412,16 +487,13 @@ class BillingChatAgent(ChatAgent):
     """Telco Billing Chat Agent backed by a LangGraph tool-calling loop."""
 
     def __init__(self):
-        # Default graph with all tools (customer_care persona)
-        self._default_graph = _build_graph(llm, tools, system_prompt)
-        # Cache persona-specific graphs to avoid rebuilding on every request
+        # No default graph with all tools.
+        # Persona-specific graphs are built on first use.
         self._persona_graphs: dict[str, CompiledStateGraph] = {}
 
     def _get_graph(self, custom_inputs: Optional[dict[str, Any]] = None) -> CompiledStateGraph:
         """Return a compiled graph for the requested persona."""
         persona = (custom_inputs or {}).get("persona", DEFAULT_PERSONA)
-        if persona == DEFAULT_PERSONA and not _PERSONA_TOOLS.get(persona):
-            return self._default_graph
         if persona not in self._persona_graphs:
             persona_tools = _filter_tools_for_persona(persona)
             persona_prompt = _PERSONA_PROMPTS.get(persona, system_prompt)
@@ -449,6 +521,21 @@ class BillingChatAgent(ChatAgent):
         context: Optional[ChatContext] = None,
         custom_inputs: Optional[dict[str, Any]] = None,
     ) -> ChatAgentResponse:
+        # --- Identity propagation ---
+        ctx = None
+        try:
+            raw_ctx = (custom_inputs or {}).get("request_context")
+            if raw_ctx:
+                secret = get_identity_secret()
+                ctx = validate_request_context(raw_ctx, secret)
+                logger.info(f"Authenticated request from {ctx.user_email} persona={ctx.persona}")
+        except IdentityError as e:
+            logger.warning(f"Identity validation failed: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected identity error: {e}")
+
+        _set_request_context(ctx)
+
         lc_msgs = self._to_lc_messages(messages)
         graph = self._get_graph(custom_inputs)
         try:
@@ -475,6 +562,21 @@ class BillingChatAgent(ChatAgent):
         context: Optional[ChatContext] = None,
         custom_inputs: Optional[dict[str, Any]] = None,
     ) -> Generator[ChatAgentChunk, None, None]:
+        # --- Identity propagation ---
+        ctx = None
+        try:
+            raw_ctx = (custom_inputs or {}).get("request_context")
+            if raw_ctx:
+                secret = get_identity_secret()
+                ctx = validate_request_context(raw_ctx, secret)
+                logger.info(f"Authenticated request from {ctx.user_email} persona={ctx.persona}")
+        except IdentityError as e:
+            logger.warning(f"Identity validation failed: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected identity error: {e}")
+
+        _set_request_context(ctx)
+
         lc_msgs = self._to_lc_messages(messages)
         graph = self._get_graph(custom_inputs)
         try:

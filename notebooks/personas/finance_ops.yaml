@@ -4,6 +4,9 @@ persona:
   ui_label: "Finance & Analytics"
   ui_description: "Fleet-wide billing analytics, revenue attribution, AR health, and anomaly operations."
   ui_icon: "chart"
+  required_groups:
+    - billing_finance
+    - billing_leadership
 
 system_prompt: |
   You are a Finance Billing Intelligence Agent supporting Finance Operations, AR Controllers,

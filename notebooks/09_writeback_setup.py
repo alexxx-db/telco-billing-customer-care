@@ -85,13 +85,40 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.billing_write_audit (
   result_status        STRING     NOT NULL,
   result_message       STRING,
   error_detail         STRING,
-  executed_at          TIMESTAMP  NOT NULL
+  executed_at          TIMESTAMP  NOT NULL,
+  initiating_user      STRING     COMMENT 'Human user who triggered the action',
+  executing_principal  STRING     COMMENT 'Service principal or runtime that executed',
+  persona              STRING     COMMENT 'Active persona at time of action',
+  request_id           STRING     COMMENT 'UUID from RequestContext for correlation',
+  identity_degraded    BOOLEAN    COMMENT 'True if user context was unavailable',
+  user_groups          STRING     COMMENT 'JSON array of user group memberships at request time'
 )
 USING DELTA
 TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
 COMMENT 'Immutable write audit log. Uses two-INSERT pattern: PENDING before write, then SUCCESS/FAILED after.'
 """)
 print("billing_write_audit created/verified")
+
+# COMMAND ----------
+
+# DBTITLE 1,Add identity columns to existing billing_write_audit
+# If the table already existed before this run, ensure new identity columns are present
+for col_name, col_type, comment in [
+    ("initiating_user",      "STRING",  "Human user who triggered the action"),
+    ("executing_principal",  "STRING",  "Service principal or runtime that executed"),
+    ("persona",              "STRING",  "Active persona at time of action"),
+    ("request_id",           "STRING",  "UUID from RequestContext for correlation"),
+    ("identity_degraded",    "BOOLEAN", "True if user context was unavailable"),
+    ("user_groups",          "STRING",  "JSON array of user group memberships at request time"),
+]:
+    try:
+        spark.sql(f"""
+            ALTER TABLE {catalog}.{schema}.billing_write_audit
+            ADD COLUMN IF NOT EXISTS {col_name} {col_type} COMMENT '{comment}'
+        """)
+        print(f"  Column {col_name} ensured on billing_write_audit")
+    except Exception as e:
+        print(f"  Could not add {col_name} to billing_write_audit: {e}")
 
 # COMMAND ----------
 

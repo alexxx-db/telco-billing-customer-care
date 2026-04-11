@@ -4,6 +4,9 @@ persona:
   ui_label: "Executive View"
   ui_description: "High-level billing performance summaries for CFO and senior leadership."
   ui_icon: "target"
+  required_groups:
+    - billing_leadership
+    - c_suite
 
 system_prompt: |
   You are an Executive Billing Intelligence Briefer providing concise, business-impact-first

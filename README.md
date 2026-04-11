@@ -74,6 +74,63 @@ Follow the notebooks in **numerical order** for a smooth end-to-end experience:
 
 ---
 
+## Deployment Path Capability Matrix
+
+| Capability | LangGraph (nb 03) | Agent Bricks (nb 04) |
+|---|---|---|
+| FAQ retrieval | Yes | Yes |
+| Fleet-wide analytics (Genie) | Yes | Yes |
+| Individual customer lookup | Yes | No |
+| Write-back (disputes, anomalies) | Yes | No |
+| ERP/finance data | Yes | No |
+| Streaming estimates | Yes | No |
+| Operational KPIs | Yes | No |
+| Persona filtering | Yes | No |
+| Identity propagation | Yes | No |
+| User-context-aware writes | Yes | No |
+
+**If you need write-back, individual customer tools, identity propagation, or persona filtering, you MUST use the LangGraph path (notebook 03). Agent Bricks (notebook 04) is a read-only demo tier.**
+
+---
+
+## EchoStar Identity Propagation
+
+The accelerator implements governed identity propagation using Pattern C (Hybrid):
+- **Reads**: User identity passed as parameter through governed views that filter by effective_user_id.
+- **Writes**: Token-gated mediation requiring both a valid pending-write token AND a valid RequestContext with user identity.
+- **Audit**: Every operation records initiating_user (human), executing_principal (SP), session_id, request_id, and persona.
+
+### Identity Flow
+
+1. Databricks App extracts `x-forwarded-access-token` from HTTP header
+2. App calls SCIM `/api/2.0/preview/scim/v2/Me` to get user email + groups
+3. App builds `RequestContext` (user_email, user_groups, persona, session_id, request_id, issued_at, expires_at)
+4. App signs RequestContext with HMAC-SHA256 using secret from Databricks Secret Scope
+5. App sends `custom_inputs.request_context` to Model Serving
+6. `agent.py predict()` validates signature, checks expiry, stores in thread-local state
+7. Write tools require valid token + valid RequestContext
+8. Audit records dual identity (human + SP)
+
+### Setup
+
+1. **Create the secret scope and HMAC key:**
+   ```bash
+   databricks secrets create-scope echostar-identity
+   databricks secrets put-secret echostar-identity hmac-secret --string-value "$(openssl rand -base64 32)"
+   ```
+
+2. **Apply governance tags** by running notebook `12_admin_tagging.py`
+
+3. **Validate the setup** by running notebook `12a_validate_identity_setup.py`
+
+4. **Redeploy the agent** via notebook `03_agent_deployment_and_evaluation.py`
+
+### Backwards Compatibility
+
+If `request_context` is absent from `custom_inputs`, the agent still works but with degraded identity — logged as `identity_degraded=true` in audit. Only assets tagged `gov.identity.mode=required` will block access when user context is missing.
+
+---
+
 ## Highlights
 
 - **End-to-end LLM agent lifecycle**: From data to deployment.

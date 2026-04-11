@@ -4,6 +4,9 @@ persona:
   ui_label: "Platform Engineering"
   ui_description: "Billing pipeline health, DBU costs, job reliability, and data engineering diagnostics."
   ui_icon: "gear"
+  required_groups:
+    - platform_engineering
+    - data_engineering
 
 system_prompt: |
   You are a Platform Engineering Intelligence Agent supporting the CTO, Head of Data

@@ -54,21 +54,15 @@ CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.lookup_customer(
 )
 RETURNS TABLE (
     customer_id BIGINT,
-    customer_name STRING,
     device_id BIGINT,
-    phone_number BIGINT,
-    email STRING,
     plan BIGINT,
     contract_start_dt DATE
 )
-COMMENT 'Returns the customer data of the customer given the customer_id'
+COMMENT 'Returns non-PII customer data. PII (name, email, phone) excluded by design — see PM-001.'
 RETURN (
-  SELECT 
+  SELECT
     customer_id,
-    customer_name,
     device_id,
-    phone_number,
-    email,
     plan,
     contract_start_dt
   FROM {CATALOG}.{SCHEMA}.customers
@@ -76,6 +70,28 @@ RETURN (
 );
 """
 spark.sql(sqlstr_lkp_customer)
+
+# Internal-only PII function — NOT registered as an agent tool
+sqlstr_lkp_customer_pii = f"""
+CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.lookup_customer_pii_internal(
+  input_id STRING COMMENT 'Input customer id — INTERNAL ONLY, not for agent use'
+)
+RETURNS TABLE (
+    customer_id BIGINT,
+    customer_name STRING,
+    device_id BIGINT,
+    phone_number BIGINT,
+    email STRING,
+    plan BIGINT,
+    contract_start_dt DATE
+)
+COMMENT 'INTERNAL ONLY: Returns full customer data including PII. NOT registered as an agent tool. For audit/backend processes only.'
+RETURN (
+  SELECT * FROM {CATALOG}.{SCHEMA}.customers
+  WHERE customer_id = TRY_CAST(input_id AS DECIMAL)
+);
+"""
+spark.sql(sqlstr_lkp_customer_pii)
 
 # COMMAND ----------
 
@@ -117,6 +133,7 @@ RETURN (
   FROM {CATALOG}.{SCHEMA}.billing_items
   WHERE device_id = TRY_CAST(input_id AS DECIMAL)
   ORDER BY event_ts DESC
+  LIMIT 100
 );
 """
 spark.sql(sqlstr_lkp_bill_items)

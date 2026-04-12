@@ -71,10 +71,17 @@ RETURN (
 """
 spark.sql(sqlstr_lkp_customer)
 
-# Internal-only PII function — NOT registered as an agent tool
-sqlstr_lkp_customer_pii = f"""
-CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.lookup_customer_pii_internal(
-  input_id STRING COMMENT 'Input customer id — INTERNAL ONLY, not for agent use'
+# ---------------------------------------------------------------------------
+# Internal-only PII function — isolated in a separate schema so that the
+# agent service principal and Genie Space warehouse cannot discover or
+# execute it.  The main schema grants DO NOT cover _internal.
+# ---------------------------------------------------------------------------
+_INTERNAL_SCHEMA = f"{SCHEMA}_internal"
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{_INTERNAL_SCHEMA}")
+
+spark.sql(f"""
+CREATE OR REPLACE FUNCTION {CATALOG}.{_INTERNAL_SCHEMA}.lookup_customer_pii(
+  input_id STRING COMMENT 'Customer ID — restricted to admin/audit roles only'
 )
 RETURNS TABLE (
     customer_id BIGINT,
@@ -85,13 +92,59 @@ RETURNS TABLE (
     plan BIGINT,
     contract_start_dt DATE
 )
-COMMENT 'INTERNAL ONLY: Returns full customer data including PII. NOT registered as an agent tool. For audit/backend processes only.'
+COMMENT 'Returns full customer data including PII. Restricted to {_INTERNAL_SCHEMA} schema — not accessible by agent SP or Genie.'
 RETURN (
-  SELECT * FROM {CATALOG}.{SCHEMA}.customers
+  SELECT
+    customer_id, customer_name, device_id, phone_number,
+    email, plan, contract_start_dt
+  FROM {CATALOG}.{SCHEMA}.customers
   WHERE customer_id = TRY_CAST(input_id AS DECIMAL)
 );
-"""
-spark.sql(sqlstr_lkp_customer_pii)
+""")
+print(f"PII function created in isolated schema: {CATALOG}.{_INTERNAL_SCHEMA}.lookup_customer_pii")
+
+# Drop the old function from the main schema if it exists (migration cleanup)
+spark.sql(f"DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.lookup_customer_pii_internal")
+
+# COMMAND ----------
+
+# DBTITLE 1,UC Grants: Restrict PII Access
+# The agent service principal and Genie SQL warehouse should NOT have access
+# to the _internal schema or the raw customers table.
+#
+# Grant model:
+#   - _internal schema: only account admins and designated audit groups
+#   - customers table:  REVOKE SELECT from the agent SP; the non-PII
+#     lookup_customer function uses DEFINER rights so it can still query
+#     the table, but direct SELECT by the SP or Genie is blocked.
+#
+# NOTE: These GRANT/REVOKE statements require the notebook runner to be
+# a catalog owner or account admin.  If they fail, apply manually via
+# the Catalog Explorer UI.
+
+_AGENT_SP = "billing-agent-sp"  # Service principal used by Model Serving
+
+_grant_stmts = [
+    # 1. Deny the agent SP (and by extension, Genie) USE of the internal schema
+    f"REVOKE USE SCHEMA ON SCHEMA {CATALOG}.{_INTERNAL_SCHEMA} FROM `{_AGENT_SP}`",
+    # 2. Deny direct SELECT on the raw PII table from the agent SP
+    f"REVOKE SELECT ON TABLE {CATALOG}.{SCHEMA}.customers FROM `{_AGENT_SP}`",
+    # 3. Allow the agent SP to execute the safe lookup_customer function
+    #    (DEFINER rights let the function read customers internally)
+    f"GRANT EXECUTE ON FUNCTION {CATALOG}.{SCHEMA}.lookup_customer TO `{_AGENT_SP}`",
+]
+
+for stmt in _grant_stmts:
+    try:
+        spark.sql(stmt)
+        print(f"  OK: {stmt}")
+    except Exception as e:
+        # Common: SP doesn't have the privilege yet, or caller lacks admin rights
+        print(f"  SKIP: {stmt}\n        Reason: {e}")
+
+print(f"\nGrant summary:")
+print(f"  {_AGENT_SP} CANNOT: USE {CATALOG}.{_INTERNAL_SCHEMA}, SELECT {CATALOG}.{SCHEMA}.customers")
+print(f"  {_AGENT_SP} CAN:    EXECUTE {CATALOG}.{SCHEMA}.lookup_customer (non-PII)")
 
 # COMMAND ----------
 

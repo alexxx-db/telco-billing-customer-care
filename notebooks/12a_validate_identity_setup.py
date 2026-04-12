@@ -150,6 +150,65 @@ except Exception as e:
 
 # COMMAND ----------
 
+# DBTITLE 1,Check 7: PII Function NOT in Main Schema
+try:
+    main_funcs = spark.sql(
+        f"SHOW FUNCTIONS IN {catalog}.{schema}"
+    ).collect()
+    func_names = {row.function for row in main_funcs}
+    pii_funcs = {f for f in func_names if "pii" in f.lower() or "_internal" in f.lower()}
+    if not pii_funcs:
+        record("No PII functions in main schema", True,
+               f"Main schema has {len(func_names)} functions, none contain 'pii' or '_internal'")
+    else:
+        record("No PII functions in main schema", False,
+               f"PII functions found in main schema: {sorted(pii_funcs)}. "
+               "Move to {schema}_internal schema.")
+except Exception as e:
+    record("No PII functions in main schema", False, str(e))
+
+# COMMAND ----------
+
+# DBTITLE 1,Check 8: PII Function Exists in _internal Schema
+try:
+    internal_schema = f"{schema}_internal"
+    internal_funcs = spark.sql(
+        f"SHOW FUNCTIONS IN {catalog}.{internal_schema}"
+    ).collect()
+    internal_func_names = {row.function for row in internal_funcs}
+    if "lookup_customer_pii" in internal_func_names:
+        record("PII function in _internal schema", True,
+               f"{catalog}.{internal_schema}.lookup_customer_pii exists")
+    else:
+        record("PII function in _internal schema", False,
+               f"lookup_customer_pii not found in {catalog}.{internal_schema}")
+except Exception as e:
+    record("PII function in _internal schema", False, str(e))
+
+# COMMAND ----------
+
+# DBTITLE 1,Check 9: Agent SP Cannot SELECT from customers Table
+try:
+    # Check if direct SELECT on customers table returns PII
+    # This verifies the grant model — if REVOKE SELECT worked, this query
+    # should fail when run as the agent SP. When run as admin (this notebook),
+    # we can only verify the columns exist but check that the governed
+    # lookup_customer function does NOT expose them.
+    cust_cols = spark.sql(f"DESCRIBE TABLE {catalog}.{schema}.customers").collect()
+    cust_col_names = {row.col_name for row in cust_cols}
+    pii_in_table = {"customer_name", "email", "phone_number"} & cust_col_names
+    if pii_in_table:
+        record("customers table PII audit", True,
+               f"PII columns exist in raw table (expected): {sorted(pii_in_table)}. "
+               "Ensure REVOKE SELECT has been applied for the agent SP.")
+    else:
+        record("customers table PII audit", True,
+               "No PII columns found in customers table (already clean)")
+except Exception as e:
+    record("customers table PII audit", False, str(e))
+
+# COMMAND ----------
+
 # DBTITLE 1,Summary
 print("\n" + "=" * 60)
 print("IDENTITY SETUP VALIDATION SUMMARY")

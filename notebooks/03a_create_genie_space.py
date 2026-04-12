@@ -97,10 +97,29 @@ table_identifiers = sorted(_valid)
 assert table_identifiers, "No valid tables found — create the upstream tables first."
 print(f"Creating Genie Space with {len(table_identifiers)} tables")
 
+# Genie Space instructions — curated guardrails that constrain the SQL
+# Genie generates.  These are authoritative for the Space and are shown
+# in the Genie configuration UI.
+genie_instructions = (
+    "You are a billing analytics assistant. Follow these rules strictly:\n"
+    "1. NEVER query the `customers` table directly — it contains PII "
+    "(customer_name, email, phone_number) that must not be returned.\n"
+    "2. NEVER call or reference any function containing 'pii' or '_internal' "
+    "in its name. These are restricted audit functions.\n"
+    "3. NEVER reference schemas ending in '_internal'. You only have access "
+    "to the main billing schema.\n"
+    "4. For customer-level data, use ONLY the `invoice_analytics` view which "
+    "excludes PII columns.\n"
+    "5. NEVER include customer_name, email, phone_number, or device_id in "
+    "SELECT output.\n"
+    "6. When joining tables, join on customer_id (numeric), never on name or email."
+)
+
 # Build the serialized_space payload in GenieSpaceExport format
 serialized_space = json.dumps({
     "version": 2,
     "config": {
+        "instructions": genie_instructions,
         "sample_questions": [
             {"id": uuid.uuid4().hex, "question": [q]}
             for q in sample_questions

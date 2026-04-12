@@ -311,6 +311,26 @@ bulk_apply_tags(catalog, schema, write_tags, table_names=["billing_disputes", "b
 
 # COMMAND ----------
 
+# Tag the _internal schema to mark it as restricted PII
+internal_schema = f"{schema}_internal"
+try:
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{internal_schema}")
+    spark.sql(f"""
+        ALTER SCHEMA {catalog}.{internal_schema}
+        SET TAGS (
+            'gov.identity.mode' = 'required',
+            'gov.pii.level' = 'high',
+            'gov.data.classification' = 'confidential',
+            'gov.audit.required' = 'true',
+            'gov.allowed.personas' = 'admin'
+        )
+    """)
+    print(f"Tagged {catalog}.{internal_schema} as restricted PII schema")
+except Exception as e:
+    print(f"Could not tag _internal schema: {e}")
+
+# COMMAND ----------
+
 # Validate coverage
 print("Validating tag coverage...")
 display(validate_tags(catalog, schema))

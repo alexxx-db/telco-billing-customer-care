@@ -243,8 +243,9 @@ RETURN (
     Roam_Call_charges_per_min,
     Roam_text_charges,
     International_call_charge_per_min,
-    International_text_charge 
+    International_text_charge
   FROM {CATALOG}.{SCHEMA}.billing_plans
+  LIMIT 100
 );
 """
 spark.sql(sqlstr_lkp_bill_plans)
@@ -268,7 +269,8 @@ spark.sql(f"DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.lookup_billing;")
 
 sqlstr_lkp_billing  = f"""
 CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.lookup_billing(
-    input_customer STRING COMMENT "the customer to lookup for" 
+    input_customer STRING COMMENT 'Customer ID to look up billing for',
+    lookback_months INT DEFAULT 12 COMMENT 'Number of months of history to return. Default 12. Use 3 for recent, 24 for full history. Max 36.'
 )
 RETURNS TABLE (
     customer_id BIGINT,
@@ -283,7 +285,7 @@ RETURNS TABLE (
     international_text_charges DOUBLE,
     total_charges DOUBLE
 )
-COMMENT "Returns billing information for the customer given the customer_id. Does not return PII fields."
+COMMENT 'Returns monthly billing summary for a customer. Defaults to last 12 months. Does not return PII fields.'
 RETURN
 SELECT
     customer_id,
@@ -298,8 +300,10 @@ SELECT
     international_text_charges,
     total_charges
 FROM {CATALOG}.{SCHEMA}.invoice
-WHERE  customer_id = TRY_CAST(input_customer AS DECIMAL)
-ORDER BY event_month DESC;
+WHERE customer_id = TRY_CAST(input_customer AS DECIMAL)
+  AND event_month >= DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -LEAST(lookback_months, 36)), 'yyyy-MM')
+ORDER BY event_month DESC
+LIMIT 100;
 """
 spark.sql(sqlstr_lkp_billing)
 
@@ -386,6 +390,7 @@ RETURN (
   WHERE since_hours = 0
      OR last_detection_ts >= CURRENT_TIMESTAMP - MAKE_INTERVAL(0, 0, 0, 0, since_hours, 0, 0)
   ORDER BY event_month DESC
+  LIMIT 200
 );
 """
 spark.sql(sqlstr_monitoring_status)
@@ -427,8 +432,9 @@ COMMENT 'Returns daily operational KPIs for the billing platform: DBU consumptio
 RETURN (
   SELECT *
   FROM {CATALOG}.{SCHEMA}.telemetry_operational_kpis
-  WHERE kpi_date >= CURRENT_DATE - lookback_days
+  WHERE kpi_date >= CURRENT_DATE - LEAST(lookback_days, 90)
   ORDER BY kpi_date DESC
+  LIMIT 90
 );
 """)
 
@@ -466,6 +472,7 @@ RETURN (
   FROM {CATALOG}.{SCHEMA}.telemetry_job_reliability
   WHERE billing_pipelines_only = false OR is_billing_pipeline = true
   ORDER BY is_billing_pipeline DESC, success_rate_pct ASC
+  LIMIT 100
 );
 """)
 
@@ -538,6 +545,7 @@ RETURN (
   WHERE customer_id = TRY_CAST(input_customer_id AS BIGINT)
     AND (month_filter = '' OR event_month = month_filter)
   ORDER BY event_month DESC
+  LIMIT 36
 );
 """)
 
@@ -570,8 +578,9 @@ RETURN (
          arpu_usd, total_roaming_revenue_usd, total_intl_revenue_usd,
          total_opex_usd, opex_ratio_pct, overdue_ar_ratio_pct
   FROM {CATALOG}.{SCHEMA}.gold_finance_operations_summary
-  WHERE event_month >= DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -lookback_months), 'yyyy-MM')
+  WHERE event_month >= DATE_FORMAT(ADD_MONTHS(CURRENT_DATE(), -LEAST(lookback_months, 24)), 'yyyy-MM')
   ORDER BY event_month DESC, total_billed_usd DESC
+  LIMIT 200
 );
 """)
 

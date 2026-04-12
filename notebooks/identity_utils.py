@@ -13,9 +13,13 @@ Used by:
 import hashlib
 import hmac
 import json
+import re
 import uuid
 import logging
-from dataclasses import dataclass, field, asdict
+import os
+import threading
+import base64
+from dataclasses import dataclass, field, fields, asdict
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from functools import lru_cache
@@ -25,9 +29,28 @@ from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Custom exceptions (defined first — referenced throughout module)
+# ---------------------------------------------------------------------------
+
+class IdentityError(Exception):
+    """Raised when identity validation fails."""
+    pass
+
+
+class AuthorizationError(Exception):
+    """Raised when authorization check fails."""
+    pass
+
+
 # ---------------------------------------------------------------------------
 # RequestContext — the signed identity envelope
 # ---------------------------------------------------------------------------
+
+# Deterministic JSON separators for cross-platform HMAC consistency (H11 fix)
+_JSON_SEPARATORS = (",", ":")
+
 
 @dataclass
 class RequestContext:
@@ -41,30 +64,56 @@ class RequestContext:
     expires_at: str  # ISO 8601 UTC
     signature: str = ""
 
+    _EXPECTED_FIELDS = frozenset({
+        "user_email", "user_groups", "persona", "session_id",
+        "request_id", "issued_at", "expires_at", "signature",
+    })
+
     def _signing_payload(self) -> bytes:
         d = {k: v for k, v in asdict(self).items() if k != "signature"}
-        return json.dumps(d, sort_keys=True, default=str).encode("utf-8")
+        return json.dumps(d, sort_keys=True, separators=_JSON_SEPARATORS,
+                          default=str).encode("utf-8")
 
     def sign(self, secret: bytes) -> "RequestContext":
-        self.signature = hmac.new(secret, self._signing_payload(), hashlib.sha256).hexdigest()
+        self.signature = hmac.new(
+            secret, self._signing_payload(), hashlib.sha256
+        ).hexdigest()
         return self
 
     def verify(self, secret: bytes) -> bool:
-        expected = hmac.new(secret, self._signing_payload(), hashlib.sha256).hexdigest()
+        expected = hmac.new(
+            secret, self._signing_payload(), hashlib.sha256
+        ).hexdigest()
         return hmac.compare_digest(self.signature, expected)
 
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) > datetime.fromisoformat(self.expires_at)
+        return datetime.now(timezone.utc) > _parse_iso_datetime(self.expires_at)
 
     def is_valid(self, secret: bytes) -> bool:
         return self.verify(secret) and not self.is_expired()
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), sort_keys=True, default=str)
+        return json.dumps(asdict(self), sort_keys=True,
+                          separators=_JSON_SEPARATORS, default=str)
 
     @classmethod
     def from_json(cls, s: str) -> "RequestContext":
-        return cls(**json.loads(s))
+        """Deserialize from JSON with field validation (H8 fix)."""
+        data = json.loads(s)
+        # Reject unknown keys
+        unknown = set(data.keys()) - cls._EXPECTED_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown fields in RequestContext: {unknown}")
+        # Validate required field types
+        if not isinstance(data.get("user_email"), str):
+            raise ValueError("user_email must be a string")
+        if not isinstance(data.get("user_groups"), list):
+            raise ValueError("user_groups must be a list")
+        if not all(isinstance(g, str) for g in data["user_groups"]):
+            raise ValueError("user_groups must contain only strings")
+        if not isinstance(data.get("persona"), str):
+            raise ValueError("persona must be a string")
+        return cls(**data)
 
     @classmethod
     def create(
@@ -89,6 +138,19 @@ class RequestContext:
         return ctx.sign(secret)
 
 
+def _parse_iso_datetime(s: str) -> datetime:
+    """Parse ISO 8601 datetime string, compatible with Python 3.10+ (H9 fix).
+
+    Python <3.11 cannot parse '+00:00' suffix with fromisoformat().
+    """
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        # Fallback for Python <3.11: replace +00:00 with +0000
+        normalized = re.sub(r'([+-]\d{2}):(\d{2})$', r'\1\2', s)
+        return datetime.strptime(normalized, "%Y-%m-%dT%H:%M:%S.%f%z")
+
+
 # ---------------------------------------------------------------------------
 # SCIM user info retrieval
 # ---------------------------------------------------------------------------
@@ -102,6 +164,10 @@ def get_user_info(user_token: str, workspace_host: str) -> dict:
     Raises:
         IdentityError if the call fails or returns unexpected data.
     """
+    # Validate workspace_host to prevent SSRF
+    if not re.match(r'^[\w\-\.]+$', workspace_host):
+        raise IdentityError(f"Invalid workspace host: {workspace_host!r}")
+
     url = f"https://{workspace_host}/api/2.0/preview/scim/v2/Me"
     headers = {"Authorization": f"Bearer {user_token}"}
     try:
@@ -116,14 +182,17 @@ def get_user_info(user_token: str, workspace_host: str) -> dict:
         ]
         display_name = data.get("displayName", email)
         return {"email": email, "groups": groups, "display_name": display_name}
+    except IdentityError:
+        raise
     except Exception as e:
         raise IdentityError(f"SCIM /Me call failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------
-# Identity secret management
+# Identity secret management (M6 fix: thread-safe, M7 fix: correct SDK API)
 # ---------------------------------------------------------------------------
 
+_identity_secret_lock = threading.Lock()
 _IDENTITY_SECRET_CACHE: Optional[bytes] = None
 
 
@@ -131,24 +200,37 @@ def get_identity_secret(scope: str = "echostar-identity",
                         key: str = "hmac-secret") -> bytes:
     """Retrieve the HMAC signing secret from Databricks Secret Scope.
 
-    In the App context, uses WorkspaceClient with SP credentials.
-    Caches the result for the process lifetime.
+    Thread-safe. Caches the result for the process lifetime.
     """
     global _IDENTITY_SECRET_CACHE
     if _IDENTITY_SECRET_CACHE is not None:
         return _IDENTITY_SECRET_CACHE
-    try:
-        w = WorkspaceClient()
-        secret_str = w.secrets.get_secret(scope=scope, key=key)
-        # SDK returns bytes or base64 depending on version
-        if isinstance(secret_str, bytes):
-            _IDENTITY_SECRET_CACHE = secret_str
-        else:
-            import base64
-            _IDENTITY_SECRET_CACHE = base64.b64decode(secret_str.value)
-        return _IDENTITY_SECRET_CACHE
-    except Exception as e:
-        raise IdentityError(f"Cannot retrieve identity secret from scope={scope} key={key}: {e}") from e
+    with _identity_secret_lock:
+        # Double-check after acquiring lock
+        if _IDENTITY_SECRET_CACHE is not None:
+            return _IDENTITY_SECRET_CACHE
+        try:
+            w = _get_workspace_client()
+            secret_resp = w.secrets.get_secret(scope=scope, key=key)
+            _IDENTITY_SECRET_CACHE = base64.b64decode(secret_resp.value)
+            return _IDENTITY_SECRET_CACHE
+        except Exception as e:
+            raise IdentityError(
+                f"Cannot retrieve identity secret from scope={scope} key={key}: {e}"
+            ) from e
+
+
+# ---------------------------------------------------------------------------
+# Shared WorkspaceClient (H10 fix: reuse single instance)
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _get_workspace_client() -> WorkspaceClient:
+    """Return a cached, reusable WorkspaceClient instance.
+
+    Thread-safe: WorkspaceClient is safe for concurrent use.
+    """
+    return WorkspaceClient()
 
 
 # ---------------------------------------------------------------------------
@@ -167,16 +249,35 @@ class AssetPolicy:
     data_classification: str = "internal"
 
 
+# TTL cache for resolved policies — tags change infrequently (M10 fix)
+_policy_cache: dict[str, tuple[AssetPolicy, float]] = {}
+_POLICY_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
 def resolve_asset_policy(catalog: str, schema: str, asset_name: str,
                          asset_tags: Optional[dict] = None) -> AssetPolicy:
     """Resolve governance policy for a UC asset from its tags.
 
-    Checks object-level tags first, then falls back to schema, then catalog.
-    If asset_tags is provided directly, uses those (for testing / caching).
+    Results are cached for 5 minutes. Pass asset_tags directly for testing.
     """
     if asset_tags is None:
-        asset_tags = _fetch_tags(catalog, schema, asset_name)
+        cache_key = f"{catalog}.{schema}.{asset_name}"
+        now = datetime.now(timezone.utc).timestamp()
+        if cache_key in _policy_cache:
+            cached_policy, cached_at = _policy_cache[cache_key]
+            if now - cached_at < _POLICY_CACHE_TTL_SECONDS:
+                return cached_policy
 
+        asset_tags = _fetch_tags(catalog, schema, asset_name)
+        policy = _build_policy(asset_tags)
+        _policy_cache[cache_key] = (policy, now)
+        return policy
+
+    return _build_policy(asset_tags)
+
+
+def _build_policy(asset_tags: dict) -> AssetPolicy:
+    """Build an AssetPolicy from a tag dict."""
     return AssetPolicy(
         identity_mode=asset_tags.get("gov.identity.mode", "none"),
         pii_level=asset_tags.get("gov.pii.level", "none"),
@@ -191,6 +292,13 @@ def resolve_asset_policy(catalog: str, schema: str, asset_name: str,
     )
 
 
+def _validate_sql_identifier(name: str) -> str:
+    """Validate a catalog/schema/table name to prevent SQL injection (C3 fix)."""
+    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+        raise ValueError(f"Invalid SQL identifier: {name!r}")
+    return name
+
+
 def _fetch_tags(catalog: str, schema: str, asset_name: str) -> dict:
     """Fetch UC tags for an asset with inheritance (object > schema > catalog).
 
@@ -198,23 +306,37 @@ def _fetch_tags(catalog: str, schema: str, asset_name: str) -> dict:
     Falls back to empty dict on failure.
     """
     try:
-        w = WorkspaceClient()
+        # Validate identifiers to prevent SQL injection
+        catalog = _validate_sql_identifier(catalog)
+        schema = _validate_sql_identifier(schema)
+        asset_name = _validate_sql_identifier(asset_name)
+    except ValueError as e:
+        logger.warning(f"Tag fetch skipped — invalid identifier: {e}")
+        return {}
+
+    warehouse_id = _get_warehouse_id()
+    if not warehouse_id:
+        logger.debug("No warehouse_id available for tag resolution")
+        return {}
+
+    try:
+        w = _get_workspace_client()
         # Try object-level tags first
-        tags = _get_object_tags(w, catalog, schema, asset_name)
+        tags = _get_object_tags(w, catalog, schema, asset_name, warehouse_id)
         if not tags:
-            tags = _get_schema_tags(w, catalog, schema)
+            tags = _get_schema_tags(w, catalog, schema, warehouse_id)
         if not tags:
-            tags = _get_catalog_tags(w, catalog)
+            tags = _get_catalog_tags(w, catalog, warehouse_id)
         return tags
     except Exception as e:
         logger.warning(f"Tag fetch failed for {catalog}.{schema}.{asset_name}: {e}")
         return {}
 
 
-def _get_object_tags(w: WorkspaceClient, catalog: str, schema: str, name: str) -> dict:
+def _get_object_tags(w: WorkspaceClient, catalog: str, schema: str,
+                     name: str, warehouse_id: str) -> dict:
     """Query UC tags for a specific table/view/function."""
     try:
-        # Use Statement Execution API to query information_schema
         from databricks.sdk.service.sql import StatementState
         result = w.statement_execution.execute_statement(
             statement=f"""
@@ -224,7 +346,7 @@ def _get_object_tags(w: WorkspaceClient, catalog: str, schema: str, name: str) -
                   AND table_name = '{name}'
                   AND tag_name LIKE 'gov.%'
             """,
-            warehouse_id=_get_warehouse_id(),
+            warehouse_id=warehouse_id,
             wait_timeout="10s",
         )
         if result.status and result.status.state == StatementState.SUCCEEDED and result.result:
@@ -235,7 +357,8 @@ def _get_object_tags(w: WorkspaceClient, catalog: str, schema: str, name: str) -
     return {}
 
 
-def _get_schema_tags(w: WorkspaceClient, catalog: str, schema: str) -> dict:
+def _get_schema_tags(w: WorkspaceClient, catalog: str, schema: str,
+                     warehouse_id: str) -> dict:
     """Query UC tags for a schema (inheritable defaults)."""
     try:
         from databricks.sdk.service.sql import StatementState
@@ -246,7 +369,7 @@ def _get_schema_tags(w: WorkspaceClient, catalog: str, schema: str) -> dict:
                 WHERE schema_name = '{schema}'
                   AND tag_name LIKE 'gov.%'
             """,
-            warehouse_id=_get_warehouse_id(),
+            warehouse_id=warehouse_id,
             wait_timeout="10s",
         )
         if result.status and result.status.state == StatementState.SUCCEEDED and result.result:
@@ -257,7 +380,8 @@ def _get_schema_tags(w: WorkspaceClient, catalog: str, schema: str) -> dict:
     return {}
 
 
-def _get_catalog_tags(w: WorkspaceClient, catalog: str) -> dict:
+def _get_catalog_tags(w: WorkspaceClient, catalog: str,
+                      warehouse_id: str) -> dict:
     """Query UC tags for a catalog (inheritable defaults)."""
     try:
         from databricks.sdk.service.sql import StatementState
@@ -267,7 +391,7 @@ def _get_catalog_tags(w: WorkspaceClient, catalog: str) -> dict:
                 FROM {catalog}.information_schema.catalog_tags
                 WHERE tag_name LIKE 'gov.%'
             """,
-            warehouse_id=_get_warehouse_id(),
+            warehouse_id=warehouse_id,
             wait_timeout="10s",
         )
         if result.status and result.status.state == StatementState.SUCCEEDED and result.result:
@@ -278,9 +402,9 @@ def _get_catalog_tags(w: WorkspaceClient, catalog: str) -> dict:
     return {}
 
 
+@lru_cache(maxsize=1)
 def _get_warehouse_id() -> str:
-    """Get warehouse ID from config or environment."""
-    import os
+    """Get warehouse ID from config or environment. Cached (M8 fix)."""
     wh = os.environ.get("ECHOSTAR_WAREHOUSE_ID", "")
     if not wh:
         try:
@@ -295,16 +419,6 @@ def _get_warehouse_id() -> str:
 # ---------------------------------------------------------------------------
 # Pre-tool authorization guard
 # ---------------------------------------------------------------------------
-
-class IdentityError(Exception):
-    """Raised when identity validation fails."""
-    pass
-
-
-class AuthorizationError(Exception):
-    """Raised when authorization check fails."""
-    pass
-
 
 def validate_request_context(raw_json: Optional[str], secret: bytes) -> RequestContext:
     """Parse, verify signature, and check expiry of a serialized RequestContext.
@@ -332,38 +446,30 @@ def check_tool_authorization(
     policy: AssetPolicy,
     ctx: Optional[RequestContext],
 ) -> None:
-    """Enforce pre-tool authorization. Raises AuthorizationError on deny.
-
-    Checks:
-    1. If identity is required and no valid context exists -> block.
-    2. If allowed_personas is set and current persona is not listed -> block.
-    3. Logs the access check if audit_required.
-    """
-    # Check identity requirement
+    """Enforce pre-tool authorization. Raises AuthorizationError on deny."""
     if policy.identity_mode == "required":
         if ctx is None:
             raise AuthorizationError(
                 f"BLOCKED: Tool '{tool_name}' requires user identity context. "
                 "No valid RequestContext found."
             )
-    # Check persona restriction
     if policy.allowed_personas and ctx:
         if ctx.persona not in policy.allowed_personas:
             raise AuthorizationError(
                 f"BLOCKED: Persona '{ctx.persona}' is not authorized for tool '{tool_name}'. "
                 f"Allowed: {policy.allowed_personas}"
             )
-    # Log if audit required
     if policy.audit_required:
-        user = ctx.user_email if ctx else "UNKNOWN"
-        logger.info(f"AUDIT: tool={tool_name} user={user} persona={ctx.persona if ctx else 'NONE'} policy={policy.identity_mode}")
+        user = getattr(ctx, "user_email", "UNKNOWN") if ctx else "UNKNOWN"
+        persona = getattr(ctx, "persona", "NONE") if ctx else "NONE"
+        logger.info(
+            f"AUDIT: tool={tool_name} user={user} persona={persona} "
+            f"policy={policy.identity_mode}"
+        )
 
 
 def require_user_context(ctx: Optional[RequestContext], action: str) -> RequestContext:
-    """Hard guard: require a valid RequestContext or raise.
-
-    Use at the top of any write tool or sensitive operation.
-    """
+    """Hard guard: require a valid RequestContext or raise."""
     if ctx is None:
         raise AuthorizationError(
             f"BLOCKED: Action '{action}' requires authenticated user context. "

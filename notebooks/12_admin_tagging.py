@@ -35,9 +35,20 @@ def bulk_apply_tags(catalog: str, schema: str, tags: dict, table_names: list = N
         tags: dict of tag_name -> tag_value, e.g. {"gov.identity.mode": "required"}
         table_names: optional list of specific tables. If None, applies to ALL tables in schema.
     """
+    import re
+
     if not tags:
         print("No tags provided.")
         return
+
+    # Validate tag keys and values to prevent SQL injection
+    _TAG_KEY_PATTERN = re.compile(r'^[a-z][a-z0-9._]+$')
+    _TAG_VALUE_PATTERN = re.compile(r'^[a-zA-Z0-9_,\s\-\.]+$')
+    for k, v in tags.items():
+        if not _TAG_KEY_PATTERN.match(k):
+            raise ValueError(f"Invalid tag key: {k!r}. Must match [a-z][a-z0-9._]+")
+        if not _TAG_VALUE_PATTERN.match(v):
+            raise ValueError(f"Invalid tag value for {k}: {v!r}. Must be alphanumeric.")
 
     if table_names is None:
         tables_df = spark.sql(f"SHOW TABLES IN {catalog}.{schema}")
@@ -45,19 +56,33 @@ def bulk_apply_tags(catalog: str, schema: str, tags: dict, table_names: list = N
 
     tag_clause = ", ".join([f"'{k}' = '{v}'" for k, v in tags.items()])
 
+    # Pre-classify tables vs views to avoid try/except overhead
+    try:
+        type_df = spark.sql(f"""
+            SELECT table_name, table_type
+            FROM {catalog}.information_schema.tables
+            WHERE table_schema = '{schema}'
+        """).collect()
+        type_map = {r.table_name: r.table_type for r in type_df}
+    except Exception:
+        type_map = {}
+
     results = []
     for tbl in table_names:
         fqn = f"{catalog}.{schema}.{tbl}"
+        obj_type = type_map.get(tbl, "")
+        alter_cmd = "ALTER VIEW" if "VIEW" in obj_type.upper() else "ALTER TABLE"
         try:
-            spark.sql(f"ALTER TABLE {fqn} SET TAGS ({tag_clause})")
+            spark.sql(f"{alter_cmd} {fqn} SET TAGS ({tag_clause})")
             results.append({"table": fqn, "status": "OK", "tags_applied": len(tags)})
             print(f"  Tagged {fqn}")
         except Exception as e:
-            # Try as VIEW
+            # Fallback: try the other type
+            fallback_cmd = "ALTER TABLE" if alter_cmd == "ALTER VIEW" else "ALTER VIEW"
             try:
-                spark.sql(f"ALTER VIEW {fqn} SET TAGS ({tag_clause})")
-                results.append({"table": fqn, "status": "OK (view)", "tags_applied": len(tags)})
-                print(f"  Tagged {fqn} (view)")
+                spark.sql(f"{fallback_cmd} {fqn} SET TAGS ({tag_clause})")
+                results.append({"table": fqn, "status": "OK (fallback)", "tags_applied": len(tags)})
+                print(f"  Tagged {fqn} (fallback)")
             except Exception as e2:
                 results.append({"table": fqn, "status": f"FAILED: {e2}", "tags_applied": 0})
                 print(f"  FAILED {fqn}: {e2}")

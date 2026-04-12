@@ -9,7 +9,11 @@ import hashlib
 import hmac
 import json
 import logging
+import re
+import time
 import uuid
+import base64
+import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -19,15 +23,24 @@ from mlflow.deployments import get_deploy_client
 
 logger = logging.getLogger(__name__)
 
+# Must match identity_utils.py for HMAC determinism (H11 fix)
+_JSON_SEPARATORS = (",", ":")
+
 # ---------------------------------------------------------------------------
 # Inline identity helpers (App-side only — avoids notebooks/ import path)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _RequestContext:
-    """Minimal RequestContext for App-side creation + signing."""
+    """Minimal RequestContext for App-side creation + signing.
+
+    IMPORTANT: _signing_payload() must produce identical bytes to
+    notebooks/identity_utils.py::RequestContext._signing_payload().
+    If you change field names, JSON separators, or sort order here,
+    you MUST update identity_utils.py to match (or signatures will fail).
+    """
     user_email: str
-    user_groups: list
+    user_groups: list[str]
     persona: str
     session_id: str
     request_id: str
@@ -37,7 +50,8 @@ class _RequestContext:
 
     def _signing_payload(self) -> bytes:
         d = {k: v for k, v in asdict(self).items() if k != "signature"}
-        return json.dumps(d, sort_keys=True, default=str).encode("utf-8")
+        return json.dumps(d, sort_keys=True, separators=_JSON_SEPARATORS,
+                          default=str).encode("utf-8")
 
     def sign(self, secret: bytes) -> "_RequestContext":
         self.signature = hmac.new(
@@ -46,7 +60,8 @@ class _RequestContext:
         return self
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), sort_keys=True, default=str)
+        return json.dumps(asdict(self), sort_keys=True,
+                          separators=_JSON_SEPARATORS, default=str)
 
     @classmethod
     def create(cls, user_email, user_groups, persona, session_id,
@@ -64,14 +79,32 @@ class _RequestContext:
         return ctx.sign(secret)
 
 
+# ---------------------------------------------------------------------------
+# SCIM user info — cached per token with 5-minute TTL (H4 fix)
+# ---------------------------------------------------------------------------
+
+_scim_cache: dict[str, tuple[dict, float]] = {}
+_SCIM_CACHE_TTL = 300  # 5 minutes
+
+
 def _get_user_info(user_token: str, workspace_host: str) -> dict:
-    """Call SCIM /Me to get user email and groups."""
+    """Call SCIM /Me to get user email and groups. Results cached per token."""
+    now = time.monotonic()
+    if user_token in _scim_cache:
+        cached, cached_at = _scim_cache[user_token]
+        if now - cached_at < _SCIM_CACHE_TTL:
+            return cached
+
+    # Validate host to prevent SSRF
+    if not re.match(r'^[\w\-\.]+$', workspace_host):
+        raise ValueError(f"Invalid workspace host: {workspace_host!r}")
+
     url = f"https://{workspace_host}/api/2.0/preview/scim/v2/Me"
     headers = {"Authorization": f"Bearer {user_token}"}
     resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
     data = resp.json()
-    return {
+    result = {
         "email": data.get("userName", ""),
         "groups": [
             g.get("display", "")
@@ -80,34 +113,36 @@ def _get_user_info(user_token: str, workspace_host: str) -> dict:
         ],
         "display_name": data.get("displayName", data.get("userName", "")),
     }
+    _scim_cache[user_token] = (result, now)
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Identity secret (cached for process lifetime)
+# Identity secret (cached for process lifetime, thread-safe)
 # ---------------------------------------------------------------------------
 
 _identity_secret: Optional[bytes] = None
+_secret_lock = threading.Lock()
 
 
 def _get_secret() -> bytes:
     global _identity_secret
     if _identity_secret is not None:
         return _identity_secret
-    try:
-        from databricks.sdk import WorkspaceClient
-        import base64
-        w = WorkspaceClient()
-        secret_resp = w.secrets.get_secret(
-            scope="echostar-identity", key="hmac-secret"
-        )
-        if isinstance(secret_resp, bytes):
-            _identity_secret = secret_resp
-        else:
+    with _secret_lock:
+        if _identity_secret is not None:
+            return _identity_secret
+        try:
+            from databricks.sdk import WorkspaceClient
+            w = WorkspaceClient()
+            secret_resp = w.secrets.get_secret(
+                scope="echostar-identity", key="hmac-secret"
+            )
             _identity_secret = base64.b64decode(secret_resp.value)
-        return _identity_secret
-    except Exception as e:
-        logger.error(f"Cannot retrieve identity secret: {e}")
-        raise
+            return _identity_secret
+        except Exception as e:
+            logger.error(f"Cannot retrieve identity secret: {e}")
+            raise
 
 
 # ---------------------------------------------------------------------------

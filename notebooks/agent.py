@@ -57,6 +57,8 @@ set_uc_function_client(client)
 
 config = ModelConfig(development_config="config.yaml").to_dict()
 
+# Shared WorkspaceClient — thread-safe, reused across tools (M2 fix)
+_ws_client = WorkspaceClient()
 
 ############################################
 # Define your LLM endpoint and system prompt
@@ -153,8 +155,7 @@ if _genie_space_id:
         aggregations (trends, averages, comparisons, top-N rankings).
         Delegates to a Genie Space that writes SQL over the billing dataset."""
         try:
-            w = WorkspaceClient()
-            resp = w.genie.start_conversation_and_wait(
+            resp = _ws_client.genie.start_conversation_and_wait(
                 space_id=_genie_space_id, content=question
             )
             if hasattr(resp, 'attachments') and resp.attachments:
@@ -241,20 +242,16 @@ def request_write_confirmation(
 def confirm_write_operation(token: str) -> str:
     """Execute a previously staged write after user confirms.
     token: the confirmation token from request_write_confirmation"""
-    # HARD GUARD 1: require valid pending-write token
+    # Check identity BEFORE popping token (avoids TOCTOU race on re-insert)
+    ctx = _get_request_context()
     with _pending_writes_lock:
         if token not in _pending_writes:
             return "BLOCKED: Invalid or expired token. Stage the operation again with request_write_confirmation."
+        if ctx is None:
+            # Don't pop — leave token in store for retry after authentication
+            logger.warning("Write blocked: no user identity context")
+            return "BLOCKED: Authenticated user context required for write operations."
         op = _pending_writes.pop(token)
-
-    # HARD GUARD 2: user identity context required for writes
-    ctx = _get_request_context()
-    if ctx is None:
-        # Return token to store — don't consume without executing
-        with _pending_writes_lock:
-            _pending_writes[token] = op
-        logger.warning("Write blocked: no user identity context")
-        return "BLOCKED: Authenticated user context required for write operations."
 
     return _execute_write(
         op,
@@ -265,6 +262,21 @@ def confirm_write_operation(token: str) -> str:
         persona=ctx.persona,
         user_groups=json.dumps(ctx.user_groups),
     )
+
+
+def _sanitize_sql_value(val: str) -> str:
+    """Escape a string for safe interpolation into SQL single-quoted literals."""
+    return str(val).replace("'", "''")
+
+
+def _validate_identifier(val: str, label: str) -> str:
+    """Validate that a value looks like a safe identifier (alphanumeric + hyphens/underscores).
+    Raises ValueError if it contains suspicious characters."""
+    import re
+    cleaned = str(val).strip()
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', cleaned):
+        raise ValueError(f"Invalid {label}: contains disallowed characters: {cleaned!r}")
+    return cleaned
 
 
 def _execute_write(
@@ -286,10 +298,34 @@ def _execute_write(
 
     action = op["action"]
     target_id = op["target_id"]
-    customer_id = op["customer_id"]
+    raw_customer_id = op["customer_id"]
     reason = op.get("reason", "")
     now_ts = datetime.now(timezone.utc).isoformat()
     audit_id = str(uuid.uuid4())
+
+    # --- Input validation (C1/C2 fix) ---
+    try:
+        customer_id_int = int(raw_customer_id)
+    except (ValueError, TypeError):
+        return f"ERROR: Invalid customer_id '{raw_customer_id}'. Must be numeric."
+
+    _VALID_ACTIONS = {"acknowledge_anomaly", "create_dispute", "update_dispute_status"}
+    if action not in _VALID_ACTIONS:
+        return f"ERROR: Unknown action '{_sanitize_sql_value(action)}'."
+
+    try:
+        target_id = _validate_identifier(target_id, "target_id")
+    except ValueError as e:
+        return f"ERROR: {e}"
+
+    # Escape all string values for SQL interpolation
+    esc_reason = _sanitize_sql_value(reason)
+    esc_initiating_user = _sanitize_sql_value(initiating_user)
+    esc_executing_principal = _sanitize_sql_value(executing_principal)
+    esc_session_id = _sanitize_sql_value(session_id)
+    esc_request_id = _sanitize_sql_value(request_id)
+    esc_persona = _sanitize_sql_value(persona)
+    esc_user_groups = _sanitize_sql_value(user_groups)
 
     # Build the SQL for the business write
     if action == "acknowledge_anomaly":
@@ -297,37 +333,31 @@ def _execute_write(
             f"UPDATE {catalog_name}.{schema_name}.billing_anomalies "
             f"SET acknowledged_by = 'agent', "
             f"acknowledged_at = TIMESTAMP '{now_ts}', "
-            f"acknowledgement_reason = '{reason.replace(chr(39), chr(39)+chr(39))}' "
+            f"acknowledgement_reason = '{esc_reason}' "
             f"WHERE anomaly_id = '{target_id}'"
         )
     elif action == "create_dispute":
         dispute_id = f"DSP-{str(uuid.uuid4())[:8]}"
-        escaped_reason = reason.replace("'", "''")
         sql = (
             f"INSERT INTO {catalog_name}.{schema_name}.billing_disputes "
             f"(dispute_id, customer_id, dispute_type, status, description, "
             f"created_by, created_at, updated_at) VALUES "
-            f"('{dispute_id}', {customer_id}, 'AGENT_CREATED', 'OPEN', "
-            f"'{escaped_reason}', 'agent', "
+            f"('{dispute_id}', {customer_id_int}, 'AGENT_CREATED', 'OPEN', "
+            f"'{esc_reason}', 'agent', "
             f"TIMESTAMP '{now_ts}', TIMESTAMP '{now_ts}')"
         )
     elif action == "update_dispute_status":
-        escaped_reason = reason.replace("'", "''")
         sql = (
             f"UPDATE {catalog_name}.{schema_name}.billing_disputes "
-            f"SET status = '{escaped_reason}', "
+            f"SET status = '{esc_reason}', "
             f"updated_at = TIMESTAMP '{now_ts}' "
             f"WHERE dispute_id = '{target_id}'"
         )
-    else:
-        return f"ERROR: Unknown action '{action}'."
-
-    w = WorkspaceClient()
 
     identity_degraded = initiating_user == "UNKNOWN"
 
     # Audit record: PENDING
-    w.statement_execution.execute_statement(
+    audit_resp = _ws_client.statement_execution.execute_statement(
         statement=(
             f"INSERT INTO {catalog_name}.{schema_name}.billing_write_audit "
             f"(audit_id, action_type, target_table, target_record_id, customer_id, "
@@ -336,26 +366,31 @@ def _execute_write(
             f"identity_degraded, user_groups) VALUES "
             f"('{audit_id}', '{action}', "
             f"'{catalog_name}.{schema_name}.billing_disputes', "
-            f"'{target_id}', {customer_id}, '{session_id}', 'agent', 'PENDING', "
+            f"'{target_id}', {customer_id_int}, '{esc_session_id}', 'agent', 'PENDING', "
             f"'Staged by confirm_write_operation', TIMESTAMP '{now_ts}', "
-            f"'{initiating_user}', '{executing_principal}', '{persona}', "
-            f"'{request_id}', {str(identity_degraded).lower()}, "
-            f"'{user_groups.replace(chr(39), chr(39)+chr(39))}')"
+            f"'{esc_initiating_user}', '{esc_executing_principal}', '{esc_persona}', "
+            f"'{esc_request_id}', {str(identity_degraded).lower()}, "
+            f"'{esc_user_groups}')"
         ),
         warehouse_id=warehouse_id,
         wait_timeout="10s",
     )
 
+    # Verify audit was recorded before executing business write (M3 fix)
+    if audit_resp.status and audit_resp.status.state != StatementState.SUCCEEDED:
+        logger.error(f"Audit PENDING insert failed — aborting write for {target_id}")
+        return f"ERROR: Could not record audit trail. Write aborted for safety."
+
     # Execute the business write
     try:
-        resp = w.statement_execution.execute_statement(
+        resp = _ws_client.statement_execution.execute_statement(
             statement=sql,
             warehouse_id=warehouse_id,
             wait_timeout="30s",
         )
         if resp.status.state == StatementState.SUCCEEDED:
             result_status = "SUCCESS"
-            result_msg = f"{action} completed for {target_id} (customer {customer_id})."
+            result_msg = f"{action} completed for {target_id} (customer {customer_id_int})."
         else:
             result_status = "FAILED"
             error_detail = resp.status.error.message if resp.status.error else "Unknown error"
@@ -365,7 +400,9 @@ def _execute_write(
         result_msg = f"{action} failed for {target_id}: {e}"
 
     # Audit record: result
-    w.statement_execution.execute_statement(
+    esc_sql = _sanitize_sql_value(sql)
+    esc_result_msg = _sanitize_sql_value(result_msg)
+    _ws_client.statement_execution.execute_statement(
         statement=(
             f"INSERT INTO {catalog_name}.{schema_name}.billing_write_audit "
             f"(audit_id, action_type, target_table, target_record_id, customer_id, "
@@ -374,13 +411,13 @@ def _execute_write(
             f"identity_degraded, user_groups) VALUES "
             f"('{str(uuid.uuid4())}', '{action}', "
             f"'{catalog_name}.{schema_name}.billing_disputes', "
-            f"'{target_id}', {customer_id}, '{session_id}', 'agent', "
-            f"'{sql.replace(chr(39), chr(39)+chr(39))}', "
-            f"'{result_status}', '{result_msg.replace(chr(39), chr(39)+chr(39))}', "
+            f"'{target_id}', {customer_id_int}, '{esc_session_id}', 'agent', "
+            f"'{esc_sql}', "
+            f"'{result_status}', '{esc_result_msg}', "
             f"TIMESTAMP '{datetime.now(timezone.utc).isoformat()}', "
-            f"'{initiating_user}', '{executing_principal}', '{persona}', "
-            f"'{request_id}', {str(identity_degraded).lower()}, "
-            f"'{user_groups.replace(chr(39), chr(39)+chr(39))}')"
+            f"'{esc_initiating_user}', '{esc_executing_principal}', '{esc_persona}', "
+            f"'{esc_request_id}', {str(identity_degraded).lower()}, "
+            f"'{esc_user_groups}')"
         ),
         warehouse_id=warehouse_id,
         wait_timeout="10s",
@@ -450,7 +487,7 @@ def _build_graph(
         "agent", should_continue, {"tools": "tools", END: END}
     )
     g.add_edge("tools", "agent")
-    return g.compile()
+    return g.compile(recursion_limit=config.get("recursion_limit", 30))
 
 
 ###############################################################################

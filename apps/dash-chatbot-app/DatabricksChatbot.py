@@ -1,3 +1,5 @@
+import uuid as _uuid
+
 import dash
 from dash import html, Input, Output, State, dcc
 import dash_bootstrap_components as dbc
@@ -7,6 +9,7 @@ class DatabricksChatbot:
     def __init__(self, app, endpoint_name):
         self.app = app
         self.endpoint_name = endpoint_name
+        self._session_id = str(_uuid.uuid4())
         self.layout = self._create_layout()
         self._create_callbacks()
         self._add_custom_css()
@@ -36,6 +39,7 @@ class DatabricksChatbot:
                 ),
             ], className="persona-bar mb-2"),
             dcc.Store(id="persona-store", data="customer_care"),
+            dcc.Store(id="session-id-store", data=str(_uuid.uuid4())),
             dbc.Card([
                 dbc.CardBody([
                     html.Div(id='chat-history', className='chat-history'),
@@ -153,7 +157,7 @@ class DatabricksChatbot:
         # Extract user identity token from Databricks App headers
         user_token = None
         workspace_host = None
-        session_id = ""
+        session_id = self._session_id
         try:
             from flask import request as flask_request
             user_token = flask_request.headers.get("x-forwarded-access-token")

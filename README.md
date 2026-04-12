@@ -60,17 +60,26 @@ Sachin Patil <sachin.patil@databricks.com>
 
 ## How to Use
 
-Follow the notebooks in **numerical order** for a smooth end-to-end experience:
+### Step 1: Shared Setup (run these first, regardless of deployment tier)
 
 1. **[000-config]** – Set up your catalog, schema, endpoint names, and runtime parameters.
 2. **[00_data_preparation]** – Generate synthetic datasets for billing, customers, and devices.
-3. **[01_create_vector_search]** – Build the FAQ dataset, create a Delta table, and generate a vector search index.
-4. **[02_define_uc_tools]** – Define tools that expose customer data to the agent.
+3. **[01_create_vector_search]** – Build the FAQ dataset and vector search index.
+4. **[02_define_uc_tools]** – Define UC functions for customer data access.
 5. **[03a_create_genie_space]** – Create a Genie Space for ad-hoc billing analytics.
-6. **[03_agent_deployment_and_evaluation]** – Build and log the LangGraph agent to MLflow, run agent evaluation, register to Unity Catalog, and deploy to a serving endpoint.
-7. **[04_agent_bricks_deployment]** – Deploy as an Agent Bricks Supervisor Agent (KA + Genie Space) for a fully managed multi-agent experience.
-8. **[05_billing_anomaly_detection]** – Run anomaly detection pipeline, create UC function tool and Genie table, then redeploy agent.
-7. **[`dash-chatbot-app`]** – Launch the chatbot UI to interact with your agent.
+
+### Step 2: Choose ONE Deployment Tier
+
+> **Notebooks 03 and 04 are alternative deployment paths, not sequential steps.**
+
+#### Option A: Full Agent (LangGraph) — Production Tier
+6. **[03_agent_deployment_and_evaluation]** – Build, evaluate, register, and deploy the full LangGraph agent with 19 tools, write-back, persona filtering, and identity propagation.
+7. **[05_billing_anomaly_detection]** – Run anomaly detection pipeline and redeploy.
+8. **[`dash-chatbot-app`]** – Launch the chatbot UI.
+
+#### Option B: Agent Bricks — Managed Read-Only Tier
+6. **[04_agent_bricks_deployment]** – Deploy a Supervisor Agent (KA + Genie Space) for FAQ retrieval and fleet-wide analytics. Read-only; no write-back, no individual customer tools.
+7. **[`dash-chatbot-app`]** – Launch the chatbot UI (set `SERVING_ENDPOINT` to the MAS endpoint).
 
 ---
 

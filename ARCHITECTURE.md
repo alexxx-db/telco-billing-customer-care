@@ -47,9 +47,36 @@ anomaly acknowledgement), and real-time streaming billing estimates.
 ```
 
 **Two deployment paths exist** (see DEC-002). The diagram above shows the LangGraph path
-(notebook 03), which is the full-capability tier. The Agent Bricks path (notebook 04) deploys
-a Supervisor with only FAQ Knowledge Assistant + Genie Space — no write-back, no individual
-customer tools, no identity propagation.
+(notebook 03), which is the full-capability tier. The Agent Bricks path (notebook 04) is
+a separate managed tier shown below.
+
+### Agent Bricks Path (Notebook 04) — Managed Read-Only Tier
+
+```
+ User Query
+     │
+     v
+ Supervisor Agent (MAS)
+     │
+     ├── "How is my bill calculated?" ──> Billing FAQ Agent (KA)
+     │                                     └─ FAQ docs in UC Volume
+     │                                        (indexed, RAG retrieval)
+     │
+     ├── "Average charges by plan?" ────> Billing Analytics Agent (Genie)
+     │                                     └─ SQL over 18 billing tables
+     │                                        (invoice_analytics, billing_plans, ...)
+     │
+     └── "Show charges for cust 4401" ──> Graceful decline
+                                           "Individual lookups require
+                                            the LangGraph deployment."
+```
+
+**What Agent Bricks provides**: FAQ retrieval, fleet-wide analytics, multi-agent routing.
+**What it does NOT provide**: Individual customer lookups, write-back, persona filtering,
+identity propagation, ERP profiles, streaming estimates, operational KPIs. These require
+the LangGraph tier (notebook 03).
+
+> **Notebooks 03 and 04 are alternative tiers, not sequential steps.**
 
 ---
 

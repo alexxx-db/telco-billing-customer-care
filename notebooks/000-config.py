@@ -236,7 +236,7 @@ config['mas_instructions'] = """Route queries as follows:
 - Data analysis, charge trends, plan comparisons, aggregations, top-N -> billing_analytics_agent
 - Questions spanning both -> chain FAQ for explanation, then Analytics for data; synthesize one answer.
 
-If the query requires a specific customer's billing details, inform the user that individual lookups require the dedicated customer care tools.
+This system provides fleet-wide analytics and FAQ answers only. If the query requires individual customer account lookups, write operations (disputes, anomaly acknowledgement), or customer-specific ERP data, explain that these capabilities require the full Billing Agent deployment (LangGraph tier) and suggest a fleet-wide alternative instead.
 If unclear, ask the user to clarify."""
 config['mas_tile_id'] = None  # Set by 04_agent_bricks_deployment after creation
 

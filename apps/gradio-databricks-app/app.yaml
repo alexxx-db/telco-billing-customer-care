@@ -3,24 +3,12 @@ command:
   - "app.py"
 
 env:
-  # --- App Resources (populated via Databricks Apps UI "Add resource" -> valueFrom) ---
-  # Uncomment and configure as you add resources to your app:
-
-  # - name: DATABRICKS_WAREHOUSE_ID
-  #   valueFrom: sql-warehouse
-
-  # - name: SERVING_ENDPOINT_NAME
-  #   valueFrom: serving-endpoint
-
-  # --- Static environment variables ---
   - name: APP_NAME
-    value: "Gradio Databricks Starter"
+    value: "Customer Billing Intelligence"
 
-  # - name: DATABRICKS_CATALOG
-  #   value: "my_catalog"
+  - name: SERVING_ENDPOINT_NAME
+    valueFrom: "serving-endpoint"
 
-  # - name: DATABRICKS_SCHEMA
-  #   value: "my_schema"
-
-  # - name: LOG_LEVEL
-  #   value: "INFO"
+  # Lakebase connection (Track C) — auto-injected when Lakebase resource is added
+  # - name: DB_CONNECTION_STRING
+  #   valueFrom: "database"

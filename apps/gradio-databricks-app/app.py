@@ -1,334 +1,567 @@
 """
-Gradio Databricks App — production-ready starter.
+Customer Billing Accelerator — Gradio Databricks App.
 
-Runs locally with `python app.py` and deploys to Databricks Apps.
+Multi-workspace billing intelligence application with persona-aware chat,
+analytics exploration, operational workflows, and governed identity propagation.
+
+Deployed as a Databricks App. Talks to the LangGraph agent via Model Serving.
 """
 
 import logging
 import os
-import time
-from dataclasses import dataclass, field
+import sys
+import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 import gradio as gr
-import pandas as pd
 
 # ---------------------------------------------------------------------------
-# Logging
+# Shared identity and serving client
+# ---------------------------------------------------------------------------
+# Add shared module to path (deployed alongside app via DAB or manual copy)
+_app_dir = os.path.dirname(os.path.abspath(__file__))
+_shared_dir = os.path.join(os.path.dirname(_app_dir), "shared")
+if os.path.isdir(_shared_dir) and _shared_dir not in sys.path:
+    sys.path.insert(0, _shared_dir)
+
+try:
+    from serving_client import (
+        query_serving_endpoint, build_request_context, get_user_info,
+        PERSONAS,
+    )
+    _IDENTITY_AVAILABLE = True
+except ImportError:
+    _IDENTITY_AVAILABLE = False
+    PERSONAS = {
+        "customer_care": {"label": "Customer Support", "description": "General billing help.", "icon": "👤"},
+        "finance_ops": {"label": "Finance & Analytics", "description": "Fleet-wide analytics.", "icon": "📊"},
+        "executive": {"label": "Executive View", "description": "Leadership summaries.", "icon": "🎯"},
+        "technical": {"label": "Platform Engineering", "description": "Platform diagnostics.", "icon": "⚙️"},
+    }
+
+# ---------------------------------------------------------------------------
+# Logging and configuration
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-log = logging.getLogger("gradio_app")
+log = logging.getLogger("billing_app")
+
+SERVING_ENDPOINT = os.getenv("SERVING_ENDPOINT_NAME", os.getenv("SERVING_ENDPOINT", ""))
+APP_PORT = int(os.getenv("DATABRICKS_APP_PORT", os.getenv("APP_PORT", "8000")))
+APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+SESSION_ID = str(uuid.uuid4())
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Identity helpers for Gradio (mirrors Dash app pattern)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Config:
-    """Reads environment variables with safe defaults so the app always starts."""
+def _get_user_token() -> Optional[str]:
+    """Extract user OAuth token from Databricks App proxy headers.
 
-    app_name: str = field(default_factory=lambda: os.getenv("APP_NAME", "Gradio Databricks Starter"))
-    app_port: int = field(default_factory=lambda: int(os.getenv("DATABRICKS_APP_PORT", os.getenv("APP_PORT", "8000"))))
-    app_host: str = field(default_factory=lambda: os.getenv("APP_HOST", "0.0.0.0"))
-    debug: bool = field(default_factory=lambda: os.getenv("APP_DEBUG", "false").lower() == "true")
-
-    # Databricks resource placeholders — populated via app.yaml valueFrom or env
-    warehouse_id: str = field(default_factory=lambda: os.getenv("DATABRICKS_WAREHOUSE_ID", ""))
-    catalog: str = field(default_factory=lambda: os.getenv("DATABRICKS_CATALOG", ""))
-    schema: str = field(default_factory=lambda: os.getenv("DATABRICKS_SCHEMA", ""))
-    serving_endpoint: str = field(default_factory=lambda: os.getenv("SERVING_ENDPOINT_NAME", ""))
-
-    def is_databricks_configured(self) -> bool:
-        return bool(self.warehouse_id)
+    In Gradio, the request headers are accessible via gr.Request in event handlers.
+    For server-side calls, we check the environment as fallback.
+    """
+    return os.getenv("DATABRICKS_TOKEN", None)
 
 
-cfg = Config()
+def _get_workspace_host() -> str:
+    """Get the workspace hostname."""
+    host = os.getenv("DATABRICKS_HOST", "")
+    if host:
+        return host.replace("https://", "").rstrip("/")
+    try:
+        from databricks.sdk.core import Config
+        return Config().host.replace("https://", "").rstrip("/")
+    except Exception:
+        return ""
+
+
+def _resolve_user(request: gr.Request = None) -> dict:
+    """Resolve the current user from Databricks App proxy headers."""
+    user_info = {"email": "unknown", "groups": [], "display_name": "User"}
+
+    if not _IDENTITY_AVAILABLE:
+        return user_info
+
+    # Try to get token from Gradio request headers
+    token = None
+    host = _get_workspace_host()
+
+    if request:
+        token = request.headers.get("x-forwarded-access-token")
+        host = host or request.headers.get("host", "")
+
+    if not token:
+        token = _get_user_token()
+
+    if token and host:
+        try:
+            user_info = get_user_info(token, host)
+        except Exception as e:
+            log.warning(f"SCIM user resolution failed: {e}")
+
+    return user_info
+
 
 # ---------------------------------------------------------------------------
-# Health / self-check
+# Chat handler
 # ---------------------------------------------------------------------------
 
-def health_check() -> str:
-    """Return a plaintext health report."""
+def chat_respond(message: str, history: list, persona: str,
+                 request: gr.Request = None) -> str:
+    """Send a message to the billing agent and return the response."""
+    if not SERVING_ENDPOINT:
+        return ("Serving endpoint not configured. Set `SERVING_ENDPOINT_NAME` "
+                "in app.yaml to connect to the deployed billing agent.")
+
+    if not message.strip():
+        return ""
+
+    # Build message history for the agent
+    messages = []
+    for user_msg, bot_msg in history:
+        if user_msg:
+            messages.append({"role": "user", "content": user_msg})
+        if bot_msg:
+            messages.append({"role": "assistant", "content": bot_msg})
+    messages.append({"role": "user", "content": message})
+
+    # Extract identity from request headers
+    user_token = None
+    workspace_host = _get_workspace_host()
+
+    if request:
+        user_token = request.headers.get("x-forwarded-access-token")
+        workspace_host = workspace_host or request.headers.get("host", "")
+
+    if not user_token:
+        user_token = _get_user_token()
+
+    try:
+        if _IDENTITY_AVAILABLE:
+            result = query_serving_endpoint(
+                endpoint_name=SERVING_ENDPOINT,
+                messages=messages,
+                persona=persona,
+                user_token=user_token,
+                workspace_host=workspace_host,
+                session_id=SESSION_ID,
+            )
+            return result.get("content", str(result))
+        else:
+            # Fallback without identity module
+            from mlflow.deployments import get_deploy_client
+            res = get_deploy_client("databricks").predict(
+                endpoint=SERVING_ENDPOINT,
+                inputs={
+                    "messages": messages,
+                    "max_tokens": 1024,
+                    "custom_inputs": {"persona": persona},
+                },
+            )
+            if "messages" in res:
+                return res["messages"][-1].get("content", "")
+            elif "choices" in res:
+                return res["choices"][0]["message"].get("content", "")
+            return str(res)
+    except Exception as e:
+        log.error(f"Chat error: {e}")
+        return f"Error communicating with the billing agent: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+def health_check(request: gr.Request = None) -> str:
+    """Return a detailed health and configuration report."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     mode = "Databricks App" if os.getenv("DATABRICKS_APP_PORT") else "Local"
+
+    user = _resolve_user(request)
+
     lines = [
-        f"Status:     OK",
-        f"Timestamp:  {now}",
-        f"Mode:       {mode}",
-        f"App name:   {cfg.app_name}",
-        f"Port:       {cfg.app_port}",
-        f"Debug:      {cfg.debug}",
+        "STATUS: OK",
+        f"Timestamp:     {now}",
+        f"Mode:          {mode}",
+        f"Session ID:    {SESSION_ID}",
+        "",
+        "--- User Identity ---",
+        f"Email:         {user.get('email', 'unknown')}",
+        f"Display Name:  {user.get('display_name', 'unknown')}",
+        f"Groups:        {', '.join(user.get('groups', [])) or 'none resolved'}",
+        f"Identity SDK:  {'available' if _IDENTITY_AVAILABLE else 'NOT AVAILABLE'}",
+        "",
+        "--- Serving Endpoint ---",
+        f"Endpoint:      {SERVING_ENDPOINT or 'NOT CONFIGURED'}",
         "",
         "--- Databricks Resources ---",
-        f"Warehouse:  {'configured' if cfg.warehouse_id else 'not set'}",
-        f"Catalog:    {cfg.catalog or 'not set'}",
-        f"Schema:     {cfg.schema or 'not set'}",
-        f"Serving EP: {cfg.serving_endpoint or 'not set'}",
+        f"Workspace:     {_get_workspace_host() or 'not resolved'}",
+        f"Lakebase PG:   {'configured' if os.getenv('PGHOST') else 'not configured'}",
     ]
     return "\n".join(lines)
 
-# ---------------------------------------------------------------------------
-# Integration stubs — replace these with real calls
-# ---------------------------------------------------------------------------
-
-def _query_sql(query: str) -> pd.DataFrame:
-    """
-    TODO: Integrate Databricks SQL.
-
-    Example implementation:
-        from databricks.sdk.core import Config as SdkConfig
-        from databricks import sql
-
-        sdk_cfg = SdkConfig()
-        conn = sql.connect(
-            server_hostname=sdk_cfg.host,
-            http_path=f"/sql/1.0/warehouses/{cfg.warehouse_id}",
-            credentials_provider=lambda: sdk_cfg.authenticate,
-        )
-        with conn.cursor() as cur:
-            cur.execute(query)
-            cols = [d[0] for d in cur.description]
-            return pd.DataFrame(cur.fetchall(), columns=cols)
-    """
-    log.info("SQL query requested (mock): %s", query[:120])
-    return pd.DataFrame({
-        "info": [f"SQL execution is not configured. Set DATABRICKS_WAREHOUSE_ID to enable."],
-        "query_preview": [query[:200]],
-    })
-
-
-def _call_serving_endpoint(payload: dict) -> dict:
-    """
-    TODO: Integrate Model Serving.
-
-    Example implementation:
-        import requests
-        from databricks.sdk.core import Config as SdkConfig
-
-        sdk_cfg = SdkConfig()
-        headers = {**sdk_cfg.authenticate(), "Content-Type": "application/json"}
-        resp = requests.post(
-            f"https://{sdk_cfg.host}/serving-endpoints/{cfg.serving_endpoint}/invocations",
-            headers=headers,
-            json=payload,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    """
-    log.info("Serving endpoint call requested (mock)")
-    return {"message": "Model serving is not configured. Set SERVING_ENDPOINT_NAME to enable."}
-
-
-def _read_unity_catalog_table(table_fqn: str) -> pd.DataFrame:
-    """
-    TODO: Integrate Unity Catalog reads.
-
-    Use _query_sql(f"SELECT * FROM {table_fqn} LIMIT 100") once SQL is configured.
-    """
-    log.info("UC table read requested (mock): %s", table_fqn)
-    return pd.DataFrame({"info": [f"Unity Catalog not configured. Table: {table_fqn}"]})
-
-
-def _get_secret(scope: str, key: str) -> str:
-    """
-    TODO: Integrate Databricks Secrets.
-
-    Example implementation:
-        from databricks.sdk import WorkspaceClient
-        w = WorkspaceClient()
-        return w.secrets.get_secret(scope=scope, key=key).value
-    """
-    log.warning("Secret requested but not configured: %s/%s", scope, key)
-    return ""
 
 # ---------------------------------------------------------------------------
-# Feature: Data Explorer (demo panel)
+# Sample prompts for each workspace
 # ---------------------------------------------------------------------------
 
-SAMPLE_DATA = pd.DataFrame({
-    "customer_id": [f"CUST-{i:04d}" for i in range(1, 11)],
-    "plan": ["Basic", "Pro", "Enterprise", "Basic", "Pro",
-             "Enterprise", "Basic", "Pro", "Enterprise", "Basic"],
-    "monthly_charge": [29.99, 59.99, 119.99, 29.99, 59.99,
-                       119.99, 29.99, 59.99, 119.99, 29.99],
-    "data_usage_gb": [2.1, 8.4, 45.2, 1.3, 12.7, 67.8, 3.5, 9.1, 52.0, 0.8],
-    "region": ["US-East", "US-West", "EU-West", "US-East", "APAC",
-               "EU-West", "US-East", "US-West", "APAC", "US-East"],
-})
+CHAT_SAMPLES = {
+    "customer_care": [
+        "How is my monthly bill calculated?",
+        "What are the charges for customer 4401?",
+        "How do I set up autopay?",
+        "Are there any billing anomalies for customer 4401?",
+        "Create a billing dispute for customer 4401 for overcharges",
+    ],
+    "finance_ops": [
+        "What is total billing revenue this month vs last month?",
+        "How many CRITICAL anomalies are unacknowledged right now?",
+        "Show me the OPEX ratio trend for the last 6 months.",
+        "Which customer segments have the highest overdue AR ratio?",
+    ],
+    "executive": [
+        "Give me a billing health summary for this month.",
+        "What are the top billing risks I should know about?",
+        "What is our anomaly exposure this quarter?",
+    ],
+    "technical": [
+        "Is the billing anomaly detection pipeline healthy?",
+        "What is our DBU consumption and estimated cost this week?",
+        "Show me job reliability for billing pipelines in the last 30 days.",
+    ],
+}
 
+ANALYTICS_SAMPLES = [
+    "What is the average monthly charge across all billing plans?",
+    "Which billing plan has the highest roaming charges?",
+    "What are the top 10 customers by total charges this quarter?",
+    "How many billing anomalies were detected by type last month?",
+    "What is total billed revenue vs ERP recognized revenue for the last 3 months?",
+    "Compare total charges between 12-month and 24-month contract plans.",
+    "Show me the monthly charge trend for the last 6 months.",
+    "What is the average data overage charge by plan?",
+]
 
-def explore_data(plan_filter: str, sort_by: str, limit: int) -> pd.DataFrame:
-    """Filter, sort, and limit the sample dataset."""
-    df = SAMPLE_DATA.copy()
-    if plan_filter and plan_filter != "All":
-        df = df[df["plan"] == plan_filter]
-    if sort_by in df.columns:
-        df = df.sort_values(sort_by, ascending=False)
-    return df.head(int(limit))
-
-
-def compute_summary(plan_filter: str) -> str:
-    """Compute quick stats for the selected plan."""
-    df = SAMPLE_DATA.copy()
-    if plan_filter and plan_filter != "All":
-        df = df[df["plan"] == plan_filter]
-    if df.empty:
-        return "No data for selected filter."
-    avg_charge = df["monthly_charge"].mean()
-    avg_usage = df["data_usage_gb"].mean()
-    return (
-        f"Records: {len(df)}\n"
-        f"Avg monthly charge: ${avg_charge:,.2f}\n"
-        f"Avg data usage: {avg_usage:,.1f} GB"
-    )
 
 # ---------------------------------------------------------------------------
-# Feature: Text Transformer (lightweight AI utility mock)
+# Build the Gradio UI
 # ---------------------------------------------------------------------------
 
-def transform_text(text: str, operation: str) -> str:
-    """Apply a text transformation. Placeholder for model-serving integration."""
-    if not text.strip():
-        return ""
-    ops = {
-        "UPPERCASE": text.upper(),
-        "lowercase": text.lower(),
-        "Title Case": text.title(),
-        "Word Count": f"Word count: {len(text.split())}",
-        "Reverse": text[::-1],
-        "Summarize (mock)": f"[Summary placeholder] {text[:80]}..."
-            if len(text) > 80 else f"[Summary placeholder] {text}",
-    }
-    result = ops.get(operation, text)
-    # TODO: Replace "Summarize (mock)" with _call_serving_endpoint({"inputs": text})
-    log.info("Text transform: op=%s, input_len=%d", operation, len(text))
-    return result
+def build_app() -> gr.Blocks:
+    theme = gr.themes.Soft(primary_hue="blue", secondary_hue="slate")
 
-# ---------------------------------------------------------------------------
-# UI: Build Gradio Blocks
-# ---------------------------------------------------------------------------
+    with gr.Blocks(theme=theme, title="Billing Intelligence") as app:
 
-def build_ui() -> gr.Blocks:
-    theme = gr.themes.Soft(
-        primary_hue="blue",
-        secondary_hue="slate",
-    )
+        # ── Header ──────────────────────────────────────────────────
+        gr.Markdown("""
+# Customer Billing Intelligence
+**Databricks-native billing support powered by LangGraph, Genie Spaces, and Agent Bricks.**
 
-    with gr.Blocks(theme=theme, title=cfg.app_name) as app:
-        # Header
-        gr.Markdown(
-            f"# {cfg.app_name}\n"
-            "A production-ready Gradio starter app for **Databricks Apps**. "
-            "Extend the panels below to integrate SQL, Model Serving, Unity Catalog, and more."
-        )
+Select a workspace below to explore billing FAQ, fleet analytics, customer support, or platform health.
+        """)
 
-        # --- Health / Status ---
-        with gr.Accordion("Health & Status", open=False):
-            health_output = gr.Textbox(label="Health Report", lines=12, interactive=False)
-            health_btn = gr.Button("Run Health Check", variant="secondary", size="sm")
+        # ── Persona selector (shared across tabs) ──────────────────
+        with gr.Row():
+            persona_dd = gr.Dropdown(
+                choices=[(f"{v['icon']} {v['label']}", k) for k, v in PERSONAS.items()],
+                value="customer_care",
+                label="Active Persona",
+                interactive=True,
+                scale=2,
+            )
+            persona_desc = gr.Textbox(
+                value=PERSONAS["customer_care"]["description"],
+                label="Persona Description",
+                interactive=False,
+                scale=3,
+            )
+
+        def update_persona_desc(persona):
+            return PERSONAS.get(persona, {}).get("description", "")
+
+        persona_dd.change(fn=update_persona_desc, inputs=persona_dd, outputs=persona_desc)
+
+        # ── Tab 1: Chat Workspace ───────────────────────────────────
+        with gr.Tab("Chat", id="chat"):
+            gr.Markdown("""
+### Billing Agent Chat
+Converse with the full-capability LangGraph billing agent. Supports FAQ, customer lookups,
+analytics delegation to Genie, dispute creation, anomaly acknowledgement, and more.
+
+*Persona selection controls which tools are available and how the agent responds.*
+            """)
+
+            chatbot = gr.Chatbot(
+                label="Billing Agent",
+                height=450,
+                show_copy_button=True,
+                type="tuples",
+            )
+
+            with gr.Row():
+                chat_input = gr.Textbox(
+                    placeholder="Ask a billing question...",
+                    label="Your message",
+                    scale=4,
+                    lines=1,
+                )
+                send_btn = gr.Button("Send", variant="primary", scale=1)
+
+            with gr.Row():
+                clear_btn = gr.Button("Clear Chat", variant="secondary", size="sm")
+
+            with gr.Accordion("Sample Prompts", open=False):
+                sample_md = gr.Markdown(
+                    _format_samples("customer_care")
+                )
+
+            def on_send(message, history, persona, request: gr.Request):
+                if not message.strip():
+                    return history, ""
+                response = chat_respond(message, history, persona, request)
+                history = history + [(message, response)]
+                return history, ""
+
+            send_btn.click(
+                fn=on_send,
+                inputs=[chat_input, chatbot, persona_dd],
+                outputs=[chatbot, chat_input],
+            )
+            chat_input.submit(
+                fn=on_send,
+                inputs=[chat_input, chatbot, persona_dd],
+                outputs=[chatbot, chat_input],
+            )
+            clear_btn.click(fn=lambda: ([], ""), outputs=[chatbot, chat_input])
+
+            def update_samples(persona):
+                return _format_samples(persona)
+
+            persona_dd.change(fn=update_samples, inputs=persona_dd, outputs=sample_md)
+
+        # ── Tab 2: Analytics ────────────────────────────────────────
+        with gr.Tab("Analytics", id="analytics"):
+            gr.Markdown("""
+### Fleet Analytics (Genie-Powered)
+Ask analytical questions across the entire billing dataset. These queries are routed to a
+**Databricks Genie Space** that generates SQL over 18+ billing, finance, and operational tables.
+
+*This is the same analytics engine available through the Agent Bricks read-only tier.*
+            """)
+
+            analytics_input = gr.Textbox(
+                placeholder="Ask a fleet-wide analytics question...",
+                label="Analytics Question",
+                lines=2,
+            )
+            analytics_btn = gr.Button("Run Analytics Query", variant="primary")
+            analytics_output = gr.Textbox(
+                label="Analytics Result",
+                lines=12,
+                interactive=False,
+                show_copy_button=True,
+            )
+
+            with gr.Accordion("Sample Analytics Prompts", open=True):
+                gr.Markdown("\n".join(f"- {q}" for q in ANALYTICS_SAMPLES))
+
+            def run_analytics(question, persona, request: gr.Request):
+                if not question.strip():
+                    return "Please enter a question."
+                # Route through the agent with an analytics-focused prompt
+                prefixed = (
+                    f"[Analytics query — use ask_billing_analytics tool] {question}"
+                )
+                return chat_respond(prefixed, [], persona, request)
+
+            analytics_btn.click(
+                fn=run_analytics,
+                inputs=[analytics_input, persona_dd],
+                outputs=analytics_output,
+            )
+
+        # ── Tab 3: Data Integration ─────────────────────────────────
+        with gr.Tab("Data Integration", id="data"):
+            gr.Markdown("""
+### External Data & Lakebase
+
+This accelerator integrates external enterprise data through three tracks:
+
+| Track | Technology | Purpose | Status |
+|-------|-----------|---------|--------|
+| **Track A** | Lakehouse Federation | Query external PostgreSQL ERP via foreign catalogs | Available when `erp_connection_host` is configured |
+| **Track B** | Synthetic Simulation | Local Delta tables simulating ERP accounts, orders, FX rates | Always available (default) |
+| **Track C** | Lakebase (Managed PostgreSQL) | Transactional write-back for disputes, audit, agent actions | Available when Lakebase is provisioned |
+
+#### What this means for the agent
+- **ERP data** (accounts, revenue, procurement) flows through `ext_*` views into Silver/Gold Delta tables
+- The agent accesses ERP data via UC functions: `lookup_customer_erp_profile`, `lookup_revenue_attribution`, `get_finance_operations_summary`
+- **Lakebase** stores transactional state (disputes, audit log) with ACID guarantees and sub-100ms writes
+- **Genie** queries the Delta analytical surface, including synced Lakebase data
+
+#### Try these prompts in the Chat tab
+- "What is the ERP credit profile for customer 4401?"
+- "What is total billed revenue vs ERP recognized revenue for the last 3 months?"
+- "Show me the OPEX ratio trend for the last 6 months"
+            """)
+
+            lakebase_status = gr.Textbox(
+                label="Lakebase Status",
+                value=_check_lakebase_status(),
+                interactive=False,
+                lines=4,
+            )
+            refresh_lb = gr.Button("Refresh Status", size="sm")
+            refresh_lb.click(fn=lambda: _check_lakebase_status(), outputs=lakebase_status)
+
+        # ── Tab 4: Operations ───────────────────────────────────────
+        with gr.Tab("Operations", id="ops"):
+            gr.Markdown("""
+### Operational Intelligence
+
+Use the Chat tab with the **Platform Engineering** persona for:
+- Pipeline health and job reliability
+- DBU consumption and cost analysis
+- Warehouse performance metrics
+- Write audit trail review
+
+Or with the **Finance & Analytics** persona for:
+- Revenue and ARPU trends
+- AR health and overdue ratios
+- Anomaly exposure and acknowledgement status
+
+#### Quick operational queries
+            """)
+
+            ops_question = gr.Textbox(
+                placeholder="Ask about platform health, costs, or pipeline status...",
+                label="Operations Question",
+                lines=2,
+            )
+            ops_btn = gr.Button("Query Operations", variant="primary")
+            ops_output = gr.Textbox(
+                label="Operations Result",
+                lines=10,
+                interactive=False,
+                show_copy_button=True,
+            )
+
+            ops_samples = [
+                "Is the billing anomaly detection pipeline healthy?",
+                "What is our DBU consumption and estimated cost this week?",
+                "What write operations has the agent performed in the last 24 hours?",
+                "How many CRITICAL anomalies are unacknowledged right now?",
+            ]
+            with gr.Accordion("Sample Operations Prompts", open=True):
+                gr.Markdown("\n".join(f"- {q}" for q in ops_samples))
+
+            def run_ops_query(question, persona, request: gr.Request):
+                if not question.strip():
+                    return "Please enter a question."
+                # Use technical persona for ops queries
+                effective_persona = "technical" if persona in ("customer_care",) else persona
+                return chat_respond(question, [], effective_persona, request)
+
+            ops_btn.click(
+                fn=run_ops_query,
+                inputs=[ops_question, persona_dd],
+                outputs=ops_output,
+            )
+
+        # ── Tab 5: Platform Info ────────────────────────────────────
+        with gr.Tab("Platform", id="platform"):
+            gr.Markdown("""
+### Deployment & Capability Overview
+
+This accelerator demonstrates four Databricks platform capabilities:
+
+| Pillar | What it provides | Notebook |
+|--------|-----------------|----------|
+| **Agent Bricks** | Managed read-only FAQ + Analytics supervisor (KA + Genie) | `04_agent_bricks_deployment` |
+| **Genie Spaces** | Natural language SQL over 18+ billing/finance tables | `03a_create_genie_space` |
+| **Lakebase** | Transactional write-back store for disputes and audit | `08c_lakebase_setup` |
+| **Databricks Apps** | This application — governed, persona-aware UI | This app |
+
+#### Deployment Tiers
+
+| Capability | LangGraph (Full) | Agent Bricks (Read-Only) |
+|---|---|---|
+| FAQ retrieval | Yes | Yes |
+| Fleet-wide analytics (Genie) | Yes | Yes |
+| Individual customer lookup | Yes | No |
+| Write-back (disputes, anomalies) | Yes | No |
+| ERP/finance data | Yes | No |
+| Persona filtering | Yes | No |
+| Identity propagation | Yes | No |
+
+> This app connects to the **LangGraph full-capability endpoint**.
+> For the Agent Bricks read-only experience, deploy notebook 04.
+            """)
+
+            health_output = gr.Textbox(label="Health Report", lines=14, interactive=False)
+            health_btn = gr.Button("Run Health Check", variant="secondary")
             health_btn.click(fn=health_check, outputs=health_output)
 
-        # --- Data Explorer ---
-        with gr.Tab("Data Explorer"):
-            gr.Markdown(
-                "Browse sample billing data. When connected to Databricks SQL, "
-                "this panel can query live Unity Catalog tables."
-            )
-            with gr.Row():
-                plan_dd = gr.Dropdown(
-                    choices=["All", "Basic", "Pro", "Enterprise"],
-                    value="All",
-                    label="Filter by Plan",
-                )
-                sort_dd = gr.Dropdown(
-                    choices=["customer_id", "monthly_charge", "data_usage_gb", "region"],
-                    value="monthly_charge",
-                    label="Sort by",
-                )
-                limit_sl = gr.Slider(minimum=1, maximum=10, value=5, step=1, label="Limit")
-
-            explore_btn = gr.Button("Query Data", variant="primary")
-            data_table = gr.Dataframe(label="Results")
-            summary_box = gr.Textbox(label="Summary", lines=3, interactive=False)
-
-            explore_btn.click(
-                fn=explore_data,
-                inputs=[plan_dd, sort_dd, limit_sl],
-                outputs=data_table,
-            )
-            explore_btn.click(
-                fn=compute_summary,
-                inputs=[plan_dd],
-                outputs=summary_box,
-            )
-
-        # --- Text Transformer ---
-        with gr.Tab("Text Utility"):
-            gr.Markdown(
-                "A lightweight text tool. Replace the mock summarizer with a "
-                "Databricks Model Serving endpoint for real AI capabilities."
-            )
-            with gr.Row():
-                txt_input = gr.Textbox(
-                    label="Input Text",
-                    placeholder="Type or paste text here...",
-                    lines=4,
-                )
-                txt_output = gr.Textbox(label="Output", lines=4, interactive=False)
-            op_dd = gr.Dropdown(
-                choices=["UPPERCASE", "lowercase", "Title Case", "Word Count", "Reverse", "Summarize (mock)"],
-                value="UPPERCASE",
-                label="Operation",
-            )
-            transform_btn = gr.Button("Transform", variant="primary")
-            transform_btn.click(fn=transform_text, inputs=[txt_input, op_dd], outputs=txt_output)
-
-        # --- Configuration / Info ---
-        with gr.Tab("Configuration"):
-            gr.Markdown("### Current Environment")
-            gr.Markdown(
-                "| Variable | Value |\n"
-                "|----------|-------|\n"
-                f"| `APP_NAME` | `{cfg.app_name}` |\n"
-                f"| `DATABRICKS_APP_PORT` | `{cfg.app_port}` |\n"
-                f"| `DATABRICKS_WAREHOUSE_ID` | `{'set' if cfg.warehouse_id else 'not set'}` |\n"
-                f"| `DATABRICKS_CATALOG` | `{cfg.catalog or 'not set'}` |\n"
-                f"| `DATABRICKS_SCHEMA` | `{cfg.schema or 'not set'}` |\n"
-                f"| `SERVING_ENDPOINT_NAME` | `{'set' if cfg.serving_endpoint else 'not set'}` |\n"
-            )
-            gr.Markdown(
-                "### Integration Hooks\n"
-                "- **Databricks SQL**: Set `DATABRICKS_WAREHOUSE_ID` and implement `_query_sql()`\n"
-                "- **Model Serving**: Set `SERVING_ENDPOINT_NAME` and implement `_call_serving_endpoint()`\n"
-                "- **Unity Catalog**: Configure catalog/schema, use `_read_unity_catalog_table()`\n"
-                "- **Secrets**: Use `_get_secret()` for API keys and tokens\n"
-                "- **Jobs API**: Use `WorkspaceClient().jobs` for pipeline orchestration\n"
-            )
-
-        # Footer
-        gr.Markdown(
-            "---\n"
-            "*Gradio Databricks Starter* — "
-            "[Databricks Apps Docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/) "
-            "| [Apps Cookbook](https://apps-cookbook.dev/) "
-            "| [Gradio Docs](https://www.gradio.app/docs)*"
-        )
+        # ── Footer ──────────────────────────────────────────────────
+        gr.Markdown("""
+---
+*Customer Billing Accelerator* — Powered by Databricks LangGraph, Genie Spaces, Agent Bricks, and Lakebase.
+        """)
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _format_samples(persona: str) -> str:
+    """Format sample prompts for a persona as a markdown list."""
+    samples = CHAT_SAMPLES.get(persona, CHAT_SAMPLES["customer_care"])
+    lines = [f"**Try these with {PERSONAS.get(persona, {}).get('label', persona)}:**"]
+    for s in samples:
+        lines.append(f"- {s}")
+    return "\n".join(lines)
+
+
+def _check_lakebase_status() -> str:
+    """Check if Lakebase connectivity is available."""
+    pg_host = os.getenv("PGHOST", "")
+    if pg_host:
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=pg_host,
+                port=os.getenv("PGPORT", "5432"),
+                user=os.getenv("PGUSER", ""),
+                password=os.getenv("PGPASSWORD", ""),
+                database=os.getenv("PGDATABASE", "databricks_postgres"),
+                connect_timeout=5,
+            )
+            conn.close()
+            return f"Lakebase: CONNECTED\nHost: {pg_host}\nTrack C: Active (transactional write-back enabled)"
+        except Exception as e:
+            return f"Lakebase: CONNECTION FAILED\nHost: {pg_host}\nError: {e}"
+    return (
+        "Lakebase: NOT CONFIGURED\n"
+        "To enable Track C, add a Lakebase database resource to this app\n"
+        "and run notebook 08c_lakebase_setup."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    log.info("Starting %s on %s:%d (debug=%s)", cfg.app_name, cfg.app_host, cfg.app_port, cfg.debug)
-    ui = build_ui()
-    ui.launch(
-        server_name=cfg.app_host,
-        server_port=cfg.app_port,
-        show_api=cfg.debug,
-    )
+    log.info("Starting Billing Intelligence App on %s:%d", APP_HOST, APP_PORT)
+    log.info("Serving endpoint: %s", SERVING_ENDPOINT or "(not configured)")
+    log.info("Identity SDK: %s", "available" if _IDENTITY_AVAILABLE else "not available")
+    log.info("Session ID: %s", SESSION_ID)
+
+    ui = build_app()
+    ui.launch(server_name=APP_HOST, server_port=APP_PORT)

@@ -1,8 +1,12 @@
 command: [
-  "python", 
+  "python",
   "app.py"
 ]
 
 env:
   - name: "SERVING_ENDPOINT"
     valueFrom: "serving-endpoint"
+  # Lakebase connection — auto-injected when a Lakebase database resource is added
+  # Uncomment the following when Lakebase is provisioned:
+  # - name: "DB_CONNECTION_STRING"
+  #   valueFrom: "database"

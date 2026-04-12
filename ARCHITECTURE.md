@@ -218,10 +218,22 @@ Agent calls: confirm_write_operation(token="abc12345")
   │
   └── _execute_write(op, initiating_user, executing_principal, persona, ...)
        │
-       ├── Audit INSERT (PENDING) ──> verify succeeded before proceeding
-       ├── Business SQL (UPDATE/INSERT) via Statement Execution API
-       └── Audit INSERT (SUCCESS/FAILED) with full identity trail
+       ├── If Lakebase enabled:
+       │    └── Single PostgreSQL transaction (dispute + audit) via psycopg2
+       │
+       ├── If Lakebase not available (fallback):
+       │    ├── Audit INSERT (PENDING) via Statement Execution API
+       │    ├── Business SQL (UPDATE/INSERT) via Statement Execution API
+       │    └── Audit INSERT (SUCCESS/FAILED) via Statement Execution API
+       │
+       └── Both paths record: initiating_user, executing_principal, session_id
 ```
+
+**Lakebase (Track C)** is the recommended write-back backend when available. It replaces the
+Statement Execution API -> Delta path with managed PostgreSQL, providing sub-100ms point writes,
+ACID transactions (dispute + audit in a single commit), and no SQL warehouse dependency for
+writes. When Lakebase is not provisioned, the agent falls back to the original Delta write
+path. See `docs/LAKEBASE_ARCHITECTURE.md` for the full design.
 
 **Databricks best practice: Statement Execution API for transactional writes**. The only SQL
 execution path available in Model Serving (no SparkSession). All writes go through
@@ -407,6 +419,9 @@ Deployed via DAB (`databricks bundle deploy`). Talks to the same Model Serving e
 | `08` | 99 | Lakehouse Federation setup (external ERP connection) | `CREATE CONNECTION`, `CREATE FOREIGN CATALOG` |
 | `08a` | 204 | Synthetic ERP simulation (Track B alternative to 08) | `dbldatagen` |
 | `08b` | 254 | ERP medallion pipeline (ext_* views -> Silver -> Gold) | PySpark, Delta, `CREATE VIEW` |
+| `08c` | 270 | Lakebase setup (Track C: operational write-back store) | Lakebase provisioning, `psycopg2`, PostgreSQL DDL |
+| `08d` | 125 | Lakebase sync (synced tables to Delta for analytics) | UC catalog registration, synced tables |
+| `08e` | 200 | Lakebase validation (connectivity, schema, transactions) | `psycopg2`, PostgreSQL assertions |
 | `09` | 132 | Write-back infrastructure (disputes, audit tables) | `CREATE TABLE`, `ALTER TABLE ADD COLUMN IF NOT EXISTS` |
 | `09a` | 120 | Dispute SLA enforcement (auto-escalation) | Statement Execution API |
 | `10` | 252 | Domain config (canonical views from domain YAML) | `CREATE OR REPLACE VIEW` |
@@ -436,7 +451,8 @@ Deployed via DAB (`databricks bundle deploy`). Talks to the same Model Serving e
 | **Vector Search** | `01_create_vector_search.py`, `agent.py` | Managed embedding + ANN index for FAQ retrieval. |
 | **Genie Space** | `03a_create_genie_space.py`, `agent.py` | Natural language SQL analytics without building a SQL generation tool. |
 | **Lakehouse Federation** | `08_federation_setup.py` | External ERP data queryable via UC without ETL. |
-| **Statement Execution API** | `agent.py` (`_execute_write`), `identity_utils.py` (tag queries) | SQL execution from Model Serving (no SparkSession). |
+| **Lakebase (managed PostgreSQL)** | `08c_lakebase_setup.py`, `08d_lakebase_sync.py` | Transactional write-back store for disputes/audit. ACID transactions, sub-100ms writes. |
+| **Statement Execution API** | `agent.py` (`_execute_write`), `identity_utils.py` (tag queries) | SQL execution from Model Serving (no SparkSession). Fallback when Lakebase unavailable. |
 | **`dbldatagen`** | `00_data_preparation.py` | Databricks Labs synthetic data at scale for testing. |
 | **Databricks Asset Bundles** | `apps/gradio-databricks-app/databricks.yml` | Declarative deployment for the Gradio app. |
 
@@ -493,6 +509,9 @@ notebooks/06c_monitoring_...    128 lines   Alert dispatch
 notebooks/07_system_table...    660 lines   System table telemetry
 notebooks/08_federation_...      99 lines   Lakehouse Federation (Track A)
 notebooks/08a_erp_data_...      204 lines   ERP simulation (Track B)
+notebooks/08c_lakebase_...      270 lines   Lakebase setup (Track C)
+notebooks/08d_lakebase_sync     125 lines   Lakebase-to-Delta sync
+notebooks/08e_validate_...      200 lines   Lakebase validation
 notebooks/08b_external_data...  254 lines   ERP medallion pipeline
 notebooks/09_writeback_...      132 lines   Write-back infrastructure
 notebooks/09a_dispute_aging     120 lines   Dispute SLA enforcement

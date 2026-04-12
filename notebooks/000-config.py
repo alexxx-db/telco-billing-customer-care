@@ -240,6 +240,14 @@ This system provides fleet-wide analytics and FAQ answers only. If the query req
 If unclear, ask the user to clarify."""
 config['mas_tile_id'] = None  # Set by 04_agent_bricks_deployment after creation
 
+# Lakebase (Track C: operational write-back store)
+config['lakebase_enabled'] = False   # Set True by 08c_lakebase_setup when instance is ready
+config['lakebase_instance'] = 'billing-accelerator'
+config['lakebase_database'] = 'databricks_postgres'
+config['lakebase_schema'] = 'billing_ops'
+config['lakebase_host'] = ''        # Auto-populated by 08c or PGHOST env var
+config['lakebase_port'] = '5432'
+
 # COMMAND ----------
 
 # DBTITLE 1,Validate Required Configuration

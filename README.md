@@ -49,6 +49,9 @@ Sachin Patil <sachin.patil@databricks.com>
 | `08_federation_setup` | Sets up Lakehouse Federation: UC connection to external ERP (Track A). Skip for Track B (simulation). |
 | `08a_erp_data_simulation` | Generates synthetic ERP accounts/orders, procurement costs, and FX rates (Track B). Creates ext_* view abstraction layer. |
 | `08b_external_data_ingestion` | Medallion pipeline: ext_* views -> Silver (customer_account_dims, fx_daily, procurement_monthly) -> Gold (revenue_attribution, finance_operations_summary). |
+| `08c_lakebase_setup` | Provisions a Lakebase (managed PostgreSQL) instance and bootstraps the operational schema for disputes, audit, and agent actions (Track C). |
+| `08d_lakebase_sync` | Sets up synced tables from Lakebase to Delta for Genie analytics over operational data. |
+| `08e_validate_lakebase` | Validates Lakebase connectivity, schema, read/write, and transaction atomicity. |
 | `09_writeback_setup` | Creates billing_disputes and billing_write_audit tables. Adds acknowledgement columns to billing_anomalies. Run before agent re-deployment. |
 | `09a_dispute_aging` | Nightly dispute SLA enforcement: auto-escalates disputes open > 5 days. Runs as Task 5 in daily workflow. |
 | `10_domain_config` | Domain adapter: reads domain YAML from `notebooks/domains/`, creates canonical views, regenerates UC tools. Run with `domain` = `telco` / `saas` / `utility`. |
@@ -137,6 +140,33 @@ The accelerator implements governed identity propagation using Pattern C (Hybrid
 ### Backwards Compatibility
 
 If `request_context` is absent from `custom_inputs`, the agent still works but with degraded identity — logged as `identity_degraded=true` in audit. Only assets tagged `gov.identity.mode=required` will block access when user context is missing.
+
+---
+
+## External Data Architecture: Three Tracks
+
+The accelerator supports three data integration tracks:
+
+| Track | What it is | When to use | Notebooks |
+|---|---|---|---|
+| **Track A** | Lakehouse Federation to external PostgreSQL ERP | You have a real external ERP database | `08_federation_setup` |
+| **Track B** | Synthetic ERP simulation in Delta | No external database available (demos, development) | `08a_erp_data_simulation` |
+| **Track C** | Lakebase operational write-back store | You want transactional CRUD for disputes/audit | `08c_lakebase_setup` |
+
+**Track A and B are alternatives** (choose one for ERP data). **Track C is independent** — it adds a transactional operational layer alongside whichever ERP track you choose.
+
+### Lakebase (Track C)
+
+Lakebase is Databricks-managed PostgreSQL for low-latency transactional operations. In this accelerator, it serves as the **operational write-back store** for:
+- Billing disputes (create, update, resolve)
+- Write audit trail (immutable append-only log)
+- Agent action tracking
+
+This replaces the Statement Execution API -> Delta write path with a purpose-built transactional backend. Synced tables bridge Lakebase to Delta so Genie and analytical queries can access operational data.
+
+**Setup**: Run `08c_lakebase_setup` -> `08d_lakebase_sync` -> `08e_validate_lakebase`
+
+**Note**: Lakebase and Lakehouse Federation are different products. Federation queries external databases via foreign catalogs. Lakebase runs managed PostgreSQL inside Databricks.
 
 ---
 

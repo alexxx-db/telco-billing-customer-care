@@ -192,3 +192,14 @@ persona_group_map:
     - platform_engineering
     - data_engineering
 persona_config_path: /Workspace/Users/alex.barreto@databricks.com/rcg/customer-billing-accelerator/notebooks/personas
+
+# --- Lakebase (Track C: Operational Write-Back Store) ---
+lakebase_enabled: false
+lakebase_instance: billing-accelerator
+lakebase_database: databricks_postgres
+lakebase_schema: billing_ops
+lakebase_capacity: CU_1
+lakebase_host: ''    # Auto-set by 08c_lakebase_setup or PGHOST env var
+lakebase_port: '5432'
+lakebase_user: ''    # Auto-set by Databricks Apps or PGUSER env var
+lakebase_password: '' # Auto-set by Databricks Apps or PGPASSWORD env var
